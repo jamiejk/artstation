@@ -15,6 +15,10 @@ A local server and browser-based control panel for operating a UUNA TEK ArtStati
 
 This is an early release for operators who are comfortable configuring and supervising physical plotter hardware. Keep a hand near the power switch and verify the configured bed dimensions before moving the carriage.
 
+## Web interface
+
+![ArtStation web interface showing motion, pen, speed, bed-position, and job controls](docs/images/web-interface.png)
+
 ## Requirements
 
 - Linux with Python 3.12 or newer
