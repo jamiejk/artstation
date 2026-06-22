@@ -1,0 +1,33 @@
+# Secrets and local configuration
+.env
+
+# Python environments and caches
+venv/
+.venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Runtime state and generated output
+incoming/
+jobs/
+direct_jobs/
+logs/
+plotter_pen_settings.json
+plotter_plot_settings.json
+plotter_position.json
+*.pid
+*.log
+
+# Local backups and editor files
+*.bak*
+*~
+.idea/
+.vscode/
+
+# Manual plot artifacts; keep the scripts and documentation
+manual_tests/**/*.svg
+manual_tests/**/*.plot.log
+manual_tests/**/pressure_*.log

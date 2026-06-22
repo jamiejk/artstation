@@ -1,0 +1,4 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+exec /home/jamie/plotter/venv/bin/python /home/jamie/plotter/scripts/plotter_console.py "$@"

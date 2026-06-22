@@ -1,0 +1,5 @@
+fastapi==0.136.3
+python-multipart==0.0.32
+pyserial==3.5
+uvicorn==0.49.0
+axicli @ https://cdn.evilmadscientist.com/dl/ad/public/AxiDraw_API.zip#sha256=c29ef0792dc8a2006a3a4abcb306e8d7fa5b93f8ce83c0c781eed226d7eeca24
