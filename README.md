@@ -1,6 +1,17 @@
-# ArtStation Layer Plotter
+# ArtStation Plotter Server
 
-A local FastAPI service and browser control panel for running multi-layer SVG jobs on an AxiDraw-compatible plotter. It supports ordered layers, operator prompts for pen changes, pause/resume, persisted job history, manual positioning, and a terminal control client.
+A local server and browser-based control panel for operating a UUNA TEK ArtStation or compatible pen plotter.
+
+## Features
+
+- Send SVG plot jobs to the ArtStation from any authenticated device on your local network.
+- Manage the queue and job history from the web interface, including pausing, resuming, rerunning, and cancelling jobs.
+- View the plot head on a bed map, move it to precise coordinates, and set or return to a custom home position from the browser.
+- Tune manual travel speed, pen-up and pen-down plotting speeds, servo positions, pen timing, and pen-raise rate.
+- Submit ordered, multi-layer jobs. The server pauses before the first layer and between layers so the operator can fit or change pens.
+- Persist queued jobs, job history, plot settings, pen settings, and position estimates across server restarts.
+- Validate SVG dimensions and reject movements outside the configured plotter bed.
+- Monitor and control the plotter through either the web interface or the included terminal tools.
 
 This is an early release for operators who are comfortable configuring and supervising physical plotter hardware. Keep a hand near the power switch and verify the configured bed dimensions before moving the carriage.
 
@@ -84,6 +95,6 @@ Issues and pull requests are welcome. Changes to movement, homing, cancellation,
 
 ## License
 
-Copyright (C) 2026 ArtStation Layer Plotter contributors.
+Copyright (C) 2026 ArtStation Plotter Server contributors.
 
 This project is free software licensed under the GNU General Public License, version 3. See [`LICENSE`](LICENSE).
