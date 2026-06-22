@@ -1022,6 +1022,10 @@
       if (hasHardwareSnapshot(hardware)) state.lastHardware = hardware;
       const displayHardware = hasHardwareSnapshot(hardware) ? hardware : (state.lastHardware || hardware);
       const server = data.server || {};
+      const operatorPrompt = server.operator_prompt || {};
+      $("operatorContinue").textContent = operatorPrompt.active && operatorPrompt.action === "start"
+        ? "Start"
+        : "Continue";
       const dotClass = statusClass(hardware);
       const connectionText = hardware.connected === false
         ? "Disconnected"

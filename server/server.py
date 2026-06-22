@@ -65,6 +65,7 @@ operator_prompt: dict = {
     "active": False,
     "job_id": None,
     "message": None,
+    "action": None,
     "created_at": None,
 }
 
@@ -897,7 +898,7 @@ def announce_on_linux_box(message: str) -> None:
     bleep()
 
 
-def wait_for_operator(job_id: str, message: str) -> bool:
+def wait_for_operator(job_id: str, message: str, action: str = "continue") -> bool:
     """
     Block the plotter worker until the local Linux operator console calls
     /operator/continue.
@@ -910,6 +911,7 @@ def wait_for_operator(job_id: str, message: str) -> bool:
             "active": True,
             "job_id": job_id,
             "message": message,
+            "action": action,
             "created_at": now(),
         }
 
@@ -923,6 +925,7 @@ def wait_for_operator(job_id: str, message: str) -> bool:
             "active": False,
             "job_id": None,
             "message": None,
+            "action": None,
             "created_at": None,
         }
 
@@ -1298,6 +1301,7 @@ def worker() -> None:
                         "check start position, check pen, then press Enter on the Linux box "
                         "to start Layer 1."
                     ),
+                    action="start",
                 )
 
                 with jobs_lock:

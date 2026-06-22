@@ -177,5 +177,23 @@ class CancellationTests(unittest.TestCase):
         self.assertTrue(server.operator_event.is_set())
 
 
+class OperatorPromptTests(unittest.TestCase):
+    def test_start_action_is_published_for_initial_confirmation(self):
+        captured_prompt = {}
+        event = mock.Mock()
+        event.wait.side_effect = lambda: captured_prompt.update(server.operator_prompt)
+        server.jobs["new-job"] = {"id": "new-job", "status": "queued"}
+
+        with (
+            mock.patch.object(server, "operator_event", event),
+            mock.patch.object(server, "announce_on_linux_box"),
+            mock.patch.object(server, "save_job_unlocked"),
+        ):
+            self.assertTrue(server.wait_for_operator("new-job", "Ready", action="start"))
+
+        self.assertEqual(captured_prompt["action"], "start")
+        server.jobs.pop("new-job", None)
+
+
 if __name__ == "__main__":
     unittest.main()
