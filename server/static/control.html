@@ -1329,10 +1329,10 @@
         ? ` Estimated dips: ${estimates.reduce((sum, item) => sum + Number(item.estimated_dip_count_per_layer || 0), 0)}; longest stroke ${Math.max(...estimates.map((item) => Number(item.longest_stroke_time_s || 0))).toFixed(1)}s.`
         : "";
       setMessage(`Queued ${data.job_id}.${estimateText}`);
-      const autoDipEnabled = $("autoDip").checked;
+      const autoDipWasEnabled = $("autoDip").checked;
       const dipInterval = $("dipInterval").value;
       $("uploadForm").reset();
-      $("autoDip").checked = autoDipEnabled;
+      $("autoDip").checked = autoDipWasEnabled;
       $("dipInterval").value = dipInterval;
       renderAutoDipStatus();
       await refresh();
