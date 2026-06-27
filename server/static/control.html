@@ -821,6 +821,7 @@
               <label for="dipInterval">Active plotting interval (s)</label>
               <input id="dipInterval" type="number" min="1" max="86400" step="1" value="60">
             </div>
+            <div class="spec-note" id="autoDipStatus">Auto Dip is off.</div>
             <div class="toolbar" style="margin-top:10px">
               <button id="uploadSubmit" class="primary" type="submit">Prepare &amp; Queue</button>
             </div>
@@ -991,6 +992,34 @@
       return result;
     }
 
+    function inkWellStale(well = state.inkWell) {
+      const centre = well?.centre;
+      return Boolean(
+        centre
+        && state.positionCalibrationId
+        && well.calibration_id !== state.positionCalibrationId
+      );
+    }
+
+    function inkWellReadyForAutoDip(well = state.inkWell) {
+      return Boolean(well?.installed && well?.test_passed && well?.centre && !inkWellStale(well));
+    }
+
+    function renderAutoDipStatus() {
+      if (!$("autoDipStatus")) return;
+      const interval = clamp(Number($("dipInterval")?.value || 60), 1, 86400);
+      const enabled = Boolean($("autoDip")?.checked);
+      const ready = inkWellReadyForAutoDip();
+      let text = enabled
+        ? `Auto Dip on: initial dip before plotting, then re-dip after about ${interval}s of pen-down plotting.`
+        : "Auto Dip off: this upload will not dip before or during plotting.";
+      if (!ready) {
+        text += " Ink well is not ready: run/confirm the test and mark it installed after setting the centre.";
+      }
+      $("autoDipStatus").textContent = text;
+      $("autoDipStatus").classList.toggle("warn", enabled && !ready);
+    }
+
     function applyInkWell(well) {
       state.inkWell = well || {};
       const syncInput = (id, value) => {
@@ -1006,9 +1035,7 @@
       syncInput("wellDripDwell", well?.drip_dwell_ms);
       const centre = well?.centre;
       const staleCalibration = Boolean(
-        centre
-        && state.positionCalibrationId
-        && well.calibration_id !== state.positionCalibrationId
+        inkWellStale(well)
       );
       const centreText = centre ? `${Number(centre.x_mm).toFixed(1)}, ${Number(centre.y_mm).toFixed(1)} mm` : "not set";
       const circleText = `${Number(well?.dip_circle_count ?? 0)}×${Number(well?.dip_circle_diameter_mm ?? 0).toFixed(1)} mm circles`;
@@ -1028,6 +1055,7 @@
       } else {
         marker.style.display = "none";
       }
+      renderAutoDipStatus();
     }
 
     async function saveInkWell(extra = {}) {
@@ -1182,6 +1210,8 @@
           $("penDelayUp").value = localStorage.getItem("plotPenDelayUp") ?? config.pen_delay_up ?? $("penDelayUp").value;
           $("penRateRaise").value = localStorage.getItem("plotPenRateRaise") ?? config.pen_rate_raise ?? $("penRateRaise").value;
           $("speed").value = localStorage.getItem("manualMoveSpeed") || $("speed").value;
+          $("autoDip").checked = localStorage.getItem("autoDipEnabled") === "true";
+          $("dipInterval").value = localStorage.getItem("autoDipIntervalS") || $("dipInterval").value;
           applyInkWell(config.ink_well || {});
           applyPaper(config.paper || {});
           localStorage.setItem("plotterToken", state.token);
@@ -1203,6 +1233,8 @@
       $("penDelayUp").value = localStorage.getItem("plotPenDelayUp") ?? $("penDelayUp").value;
       $("penRateRaise").value = localStorage.getItem("plotPenRateRaise") ?? $("penRateRaise").value;
       $("speed").value = localStorage.getItem("manualMoveSpeed") || $("speed").value;
+      $("autoDip").checked = localStorage.getItem("autoDipEnabled") === "true";
+      $("dipInterval").value = localStorage.getItem("autoDipIntervalS") || $("dipInterval").value;
       renderSpeedEstimates();
       applyInkWell(state.config?.ink_well || state.inkWell || {});
       applyPaper(state.config?.paper || state.paper || {});
@@ -1233,6 +1265,8 @@
       await Promise.all([savePlotSettings(), savePenSettings()]);
       const plot = plotSettingsPayload();
       const pen = penSettingsPayload();
+      localStorage.setItem("autoDipEnabled", $("autoDip").checked ? "true" : "false");
+      localStorage.setItem("autoDipIntervalS", String(clamp(Number($("dipInterval").value || 60), 1, 86400)));
       const form = new FormData();
       files.forEach((file) => form.append("files", file));
       if ($("layerNames").value.trim()) form.append("layer_names", $("layerNames").value.trim());
@@ -1253,8 +1287,12 @@
         ? ` Estimated dips: ${estimates.reduce((sum, item) => sum + Number(item.estimated_dip_count_per_layer || 0), 0)}; longest stroke ${Math.max(...estimates.map((item) => Number(item.longest_stroke_time_s || 0))).toFixed(1)}s.`
         : "";
       setMessage(`Queued ${data.job_id}.${estimateText}`);
+      const autoDipEnabled = $("autoDip").checked;
+      const dipInterval = $("dipInterval").value;
       $("uploadForm").reset();
-      $("dipInterval").value = "60";
+      $("autoDip").checked = autoDipEnabled;
+      $("dipInterval").value = dipInterval;
+      renderAutoDipStatus();
       await refresh();
     }
 
@@ -1438,6 +1476,7 @@
         $("homeMarker").style.display = "none";
       }
       applyInkWell(state.inkWell || state.config?.ink_well || {});
+      renderAutoDipStatus();
 
       renderServerInfo();
     }

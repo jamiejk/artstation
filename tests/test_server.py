@@ -682,6 +682,36 @@ class AutoDipExecutionTests(unittest.TestCase):
         run.assert_called_once()
         resume.assert_called_once()
 
+    def test_auto_dip_runs_initial_dip_before_first_plot(self):
+        job = {
+            "id": "dip-job",
+            "auto_dip_enabled": True,
+            "dip_count": 0,
+            "ink_well": {},
+        }
+        layer = {"index": 1}
+        server.jobs[job["id"]] = job
+        events = []
+
+        def dip(_job, _log):
+            events.append("dip")
+            return {"return_error_mm": 0}
+
+        def plot(_job, _layer, _log):
+            events.append("plot")
+            return "done"
+
+        with (
+            mock.patch.object(server, "execute_dip_cycle", side_effect=dip),
+            mock.patch.object(server, "run_layer", side_effect=plot),
+            mock.patch.object(server, "save_job_unlocked"),
+        ):
+            result = server.run_layer_with_auto_dips(job, layer, mock.Mock())
+
+        self.assertEqual(result, "done")
+        self.assertEqual(events, ["dip", "plot"])
+        self.assertEqual(job["dip_count"], 1)
+
     def test_dip_failure_never_starts_plot(self):
         job = {
             "id": "dip-job",
