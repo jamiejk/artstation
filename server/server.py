@@ -918,6 +918,15 @@ def apply_paper_alignment_to_job(job: dict) -> None:
     job["plot_origin"] = origin
 
 
+def layer_dip_estimates(layers: list[dict]) -> list[dict]:
+    return [
+        layer["ink_analysis"]["dip_schedule"]
+        for layer in layers
+        if isinstance(layer.get("ink_analysis"), dict)
+        and layer["ink_analysis"].get("dip_schedule")
+    ]
+
+
 def require_hardware_idle() -> None:
     with jobs_lock:
         active = active_running_job_unlocked()
@@ -2770,24 +2779,22 @@ async def plot_layers(
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
+    response_payload = {
+        "job_id": job_id,
+        "status": "queued",
+        "layer_count": len(layers),
+        "auto_dip_enabled": auto_dip,
+        "dip_estimates": layer_dip_estimates(layers),
+        "status_url": f"/jobs/{job_id}",
+    }
+
     with jobs_lock:
         jobs[job_id] = job
         save_job_unlocked(job_id)
 
     job_queue.put(job_id)
 
-    return {
-        "job_id": job_id,
-        "status": "queued",
-        "layer_count": len(layers),
-        "auto_dip_enabled": auto_dip,
-        "dip_estimates": [
-            layer["ink_analysis"]["dip_schedule"]
-            for layer in layers
-            if layer.get("ink_analysis", {}).get("dip_schedule")
-        ],
-        "status_url": f"/jobs/{job_id}",
-    }
+    return response_payload
 
 
 @app.get("/jobs")

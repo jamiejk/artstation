@@ -173,6 +173,18 @@ class PaperSettingsTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "exceeds"):
             server.job_plot_origin_for_paper(job, paper)
 
+    def test_layer_dip_estimates_ignores_layers_without_ink_analysis(self):
+        layers = [
+            {"ink_analysis": None},
+            {},
+            {"ink_analysis": {"dip_schedule": {"estimated_dip_count_per_layer": 2}}},
+        ]
+
+        self.assertEqual(
+            server.layer_dip_estimates(layers),
+            [{"estimated_dip_count_per_layer": 2}],
+        )
+
 
 class PlotSettingsTests(unittest.TestCase):
     def test_validates_pen_positions(self):
