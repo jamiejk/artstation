@@ -668,6 +668,16 @@ def validate_dip_interval(value: float) -> float:
     return value
 
 
+def resolve_auto_dip_flag(*values) -> bool:
+    truthy = {"1", "true", "yes", "on", "y"}
+    for value in values:
+        if value is True:
+            return True
+        if isinstance(value, str) and value.strip().lower() in truthy:
+            return True
+    return False
+
+
 def raw_xy_to_bed_xy(raw_xy: dict | None) -> dict | None:
     if raw_xy is None:
         return None
@@ -2622,7 +2632,11 @@ async def plot_layers(
     pen_rate_raise: Optional[int] = Form(None),
     pen_pos_down: Optional[int] = Form(None),
     pen_pos_up: Optional[int] = Form(None),
-    auto_dip: bool = Form(False),
+    auto_dip: Optional[bool] = Form(None),
+    ink_dip: Optional[bool] = Form(None),
+    ink_dipping: Optional[bool] = Form(None),
+    automatic_ink_dipping: Optional[bool] = Form(None),
+    autoDip: Optional[bool] = Form(None),
     dip_interval_s: Optional[float] = Form(None),
     x_plotter_token: Optional[str] = Header(default=None),
 ):
@@ -2636,6 +2650,7 @@ async def plot_layers(
       "Light blue,Dark blue,Black,White"
     """
     check_token(x_plotter_token)
+    auto_dip = resolve_auto_dip_flag(auto_dip, ink_dip, ink_dipping, automatic_ink_dipping, autoDip)
     pen_defaults = current_pen_settings()
     plot_defaults = current_plot_settings()
     if speed_pendown is None:

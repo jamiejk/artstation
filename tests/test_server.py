@@ -674,6 +674,12 @@ class AutoDipExecutionTests(unittest.TestCase):
         with server.position_lock:
             server.position_current = None
 
+    def test_resolves_auto_dip_upload_aliases(self):
+        self.assertTrue(server.resolve_auto_dip_flag(None, False, True))
+        self.assertTrue(server.resolve_auto_dip_flag(None, "on"))
+        self.assertTrue(server.resolve_auto_dip_flag(None, "yes"))
+        self.assertFalse(server.resolve_auto_dip_flag(None, False, "false", "0"))
+
     def test_prepares_checkpoint_digest_for_layer(self):
         analysis = {
             "dip_schedule": {

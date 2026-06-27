@@ -1286,8 +1286,13 @@
       files.forEach((file) => form.append("files", file));
       if ($("layerNames").value.trim()) form.append("layer_names", $("layerNames").value.trim());
       Object.entries(Object.assign({}, plot, pen)).forEach(([key, value]) => form.append(key, String(value)));
-      form.append("auto_dip", $("autoDip").checked ? "true" : "false");
-      if ($("autoDip").checked) form.append("dip_interval_s", String(Number($("dipInterval").value || 60)));
+      const autoDipEnabled = $("autoDip").checked;
+      form.append("auto_dip", autoDipEnabled ? "true" : "false");
+      form.append("ink_dip", autoDipEnabled ? "true" : "false");
+      form.append("ink_dipping", autoDipEnabled ? "true" : "false");
+      form.append("automatic_ink_dipping", autoDipEnabled ? "true" : "false");
+      form.append("autoDip", autoDipEnabled ? "true" : "false");
+      if (autoDipEnabled) form.append("dip_interval_s", String(Number($("dipInterval").value || 60)));
 
       const response = await fetch("/plot/layers", {
         method: "POST",
