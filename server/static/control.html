@@ -866,6 +866,7 @@
       dragTarget: null,
       currentPosition: { x: 0, y: 0 },
       positionKnown: false,
+      positionCalibrationId: null,
       inkWell: null,
       paper: null,
     };
@@ -1004,9 +1005,17 @@
       syncInput("wellDipCircleDiameter", well?.dip_circle_diameter_mm);
       syncInput("wellDripDwell", well?.drip_dwell_ms);
       const centre = well?.centre;
+      const staleCalibration = Boolean(
+        centre
+        && state.positionCalibrationId
+        && well.calibration_id !== state.positionCalibrationId
+      );
       const centreText = centre ? `${Number(centre.x_mm).toFixed(1)}, ${Number(centre.y_mm).toFixed(1)} mm` : "not set";
       const circleText = `${Number(well?.dip_circle_count ?? 0)}×${Number(well?.dip_circle_diameter_mm ?? 0).toFixed(1)} mm circles`;
-      $("wellStatus").textContent = `Centre ${centreText} · pickup ${circleText} · test ${well?.test_passed ? "passed" : "required"} · ${well?.installed ? "installed" : "not installed"}`;
+      $("wellStatus").textContent = staleCalibration
+        ? `Centre ${centreText} is stale after Home/current-position calibration changed. Re-position over the well and press Set Centre Here.`
+        : `Centre ${centreText} · pickup ${circleText} · test ${well?.test_passed ? "passed" : "required"} · ${well?.installed ? "installed" : "not installed"}`;
+      $("wellStatus").classList.toggle("warn", staleCalibration);
       $("wellInstalled").textContent = well?.installed ? "Mark Removed" : "Mark Installed";
       const marker = $("wellMarker");
       if (centre && Number(well.radius_mm) > 0) {
@@ -1365,6 +1374,7 @@
       const home = displayHardware.home_position || null;
       const steps = displayHardware.steps || {};
       const positionSource = displayHardware.position_source || "-";
+      state.positionCalibrationId = displayHardware.position_calibration_id || null;
       state.positionKnown = Boolean(pos);
       if (pos) {
         state.currentPosition = {

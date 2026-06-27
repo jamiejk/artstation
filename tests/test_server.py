@@ -447,6 +447,8 @@ class InkDipGeometryTests(unittest.TestCase):
 
 class InkWellSettingsTests(unittest.TestCase):
     def setUp(self):
+        with server.position_lock:
+            server.position_calibration_id = "test-calibration"
         with server.ink_well_settings_lock:
             server.ink_well_settings.clear()
             server.ink_well_settings.update(
@@ -461,6 +463,7 @@ class InkWellSettingsTests(unittest.TestCase):
                     "drip_dwell_ms": 0,
                     "dip_circle_count": 3,
                     "dip_circle_diameter_mm": 10.0,
+                    "calibration_id": None,
                     "test_passed": False,
                     "tested_at": None,
                 }
@@ -499,6 +502,7 @@ class InkWellSettingsTests(unittest.TestCase):
             "drip_dwell_ms": 100,
             "dip_circle_count": 3,
             "dip_circle_diameter_mm": 10,
+            "calibration_id": "test-calibration",
             "test_passed": True,
             "tested_at": 123,
         }
@@ -568,6 +572,7 @@ class InkWellSettingsTests(unittest.TestCase):
                     "drip_dwell_ms": 0,
                     "dip_circle_count": 3,
                     "dip_circle_diameter_mm": 10,
+                    "calibration_id": "test-calibration",
                     "test_passed": False,
                     "tested_at": None,
                 }
@@ -580,6 +585,35 @@ class InkWellSettingsTests(unittest.TestCase):
 
         self.assertFalse(result["ink_well"]["test_passed"])
         self.assertIsNotNone(result["ink_well"]["tested_at"])
+
+    def test_ink_well_test_rejects_stale_position_calibration(self):
+        request = mock.Mock()
+        request.client.host = "127.0.0.1"
+        with server.ink_well_settings_lock:
+            server.ink_well_settings.update(
+                {
+                    "centre": {"x_mm": 10, "y_mm": 20},
+                    "radius_mm": 15,
+                    "clearance_pos": 80,
+                    "dip_pos": 20,
+                    "dwell_ms": 1000,
+                    "drip_dwell_ms": 0,
+                    "dip_circle_count": 3,
+                    "dip_circle_diameter_mm": 10,
+                    "calibration_id": "old-calibration",
+                    "test_passed": False,
+                    "tested_at": None,
+                }
+            )
+        with server.position_lock:
+            server.set_current_position_unlocked(10, 20)
+            server.position_calibration_id = "new-calibration"
+
+        with self.assertRaises(HTTPException) as caught:
+            server.plotter_ink_well_test(request, x_plotter_token="test-token")
+
+        self.assertEqual(caught.exception.status_code, 409)
+        self.assertIn("different plotter calibration", caught.exception.detail)
 
     def test_ink_well_test_confirmation_marks_passed_after_cycle(self):
         request = mock.Mock()

@@ -77,6 +77,7 @@ position_lock = threading.RLock()
 position_offset = {"x_mm": 0.0, "y_mm": 0.0}
 position_current: dict | None = None
 home_position: dict | None = None
+position_calibration_id = uuid.uuid4().hex
 pen_settings_lock = threading.RLock()
 pen_settings = {"pen_pos_up": 65, "pen_pos_down": 35}
 plot_settings_lock = threading.RLock()
@@ -295,7 +296,7 @@ def now() -> float:
 
 
 def load_position_offset() -> None:
-    global position_offset, position_current, home_position
+    global position_offset, position_current, home_position, position_calibration_id
     if not POSITION_PATH.exists():
         return
     try:
@@ -307,6 +308,10 @@ def load_position_offset() -> None:
             "x_mm": float(data.get("x_mm", 0.0)),
             "y_mm": float(data.get("y_mm", 0.0)),
         }
+        has_calibration_id = False
+        if isinstance(data.get("calibration_id"), str) and data["calibration_id"]:
+            position_calibration_id = data["calibration_id"]
+            has_calibration_id = True
         current = data.get("current_position")
         if isinstance(current, dict):
             position_current = {
@@ -319,6 +324,8 @@ def load_position_offset() -> None:
                 "x_mm": float(home.get("x_mm", 0.0)),
                 "y_mm": float(home.get("y_mm", 0.0)),
             }
+        if not has_calibration_id:
+            save_position_offset_unlocked()
     except Exception as exc:
         print(f"Could not load {POSITION_PATH}: {exc}", flush=True)
 
@@ -328,12 +335,23 @@ def save_position_offset_unlocked() -> None:
         "state_version": POSITION_STATE_VERSION,
         "x_mm": position_offset["x_mm"],
         "y_mm": position_offset["y_mm"],
+        "calibration_id": position_calibration_id,
     }
     if position_current is not None:
         data["current_position"] = dict(position_current)
     if home_position is not None:
         data["home_position"] = dict(home_position)
     POSITION_PATH.write_text(json.dumps(data, indent=2), encoding="utf-8")
+
+
+def renew_position_calibration_unlocked() -> None:
+    global position_calibration_id
+    position_calibration_id = uuid.uuid4().hex
+
+
+def current_position_calibration_id() -> str:
+    with position_lock:
+        return position_calibration_id
 
 
 def load_pen_settings() -> None:
@@ -492,6 +510,7 @@ def load_ink_well_settings() -> None:
             "drip_dwell_ms": 0,
             "dip_circle_count": 3,
             "dip_circle_diameter_mm": 10.0,
+            "calibration_id": None,
             "test_passed": False,
             "tested_at": None,
         }
@@ -563,6 +582,10 @@ def validate_ink_well_settings(settings: dict, *, require_ready: bool = False) -
         raise ValueError("dip_circle_diameter_mm must fit inside the ink well radius")
     settings["dip_circle_diameter_mm"] = circle_diameter
 
+    calibration_id = settings.get("calibration_id")
+    if calibration_id is not None and not isinstance(calibration_id, str):
+        raise ValueError("Ink well calibration_id must be a string")
+
     if require_ready:
         missing = [
             key
@@ -576,8 +599,17 @@ def validate_ink_well_settings(settings: dict, *, require_ready: bool = False) -
     return settings
 
 
+def require_ink_well_current_calibration(settings: dict) -> None:
+    if settings.get("calibration_id") != current_position_calibration_id():
+        raise ValueError(
+            "Ink well centre was saved under a different plotter calibration. "
+            "Move the head to the ink well centre and press Set Centre Here."
+        )
+
+
 def ink_well_plot_snapshot(settings: dict) -> dict:
     validate_ink_well_settings(settings, require_ready=True)
+    require_ink_well_current_calibration(settings)
     return {
         "centre": dict(settings["centre"]),
         "radius_mm": settings["radius_mm"],
@@ -698,6 +730,7 @@ def invalidate_position_reference_unlocked() -> None:
     home_position = None
     position_offset["x_mm"] = 0.0
     position_offset["y_mm"] = 0.0
+    renew_position_calibration_unlocked()
     save_position_offset_unlocked()
 
 
@@ -1632,6 +1665,7 @@ def overlay_live_hardware_fields(state: dict) -> dict:
     with position_lock:
         raw_xy_mm = result.get("raw_position_estimate")
         result["position_offset"] = dict(position_offset)
+        result["position_calibration_id"] = position_calibration_id
         result["home_position"] = dict(home_position) if home_position is not None else None
         result["position_source"] = "software" if position_current is not None else "step_counter"
         if position_current is not None:
@@ -3385,6 +3419,7 @@ def plotter_ink_well_update(
         candidate = current_ink_well_settings()
         if payload.get("centre_from_current"):
             candidate["centre"] = current_software_position()
+            candidate["calibration_id"] = current_position_calibration_id()
         for key in editable:
             if key in payload:
                 candidate[key] = payload[key]
@@ -3413,6 +3448,8 @@ def plotter_ink_well_update(
                 candidate,
                 require_ready=bool(candidate.get("installed")),
             )
+            if candidate.get("installed"):
+                require_ink_well_current_calibration(candidate)
         except (ValueError, HTTPException) as exc:
             detail = exc.detail if isinstance(exc, HTTPException) else str(exc)
             raise HTTPException(status_code=400, detail=detail) from exc
@@ -3449,6 +3486,13 @@ def plotter_ink_well_test(
     ]
     if missing:
         raise HTTPException(status_code=400, detail=f"Ink well setup is incomplete: {', '.join(missing)}")
+    try:
+        require_ink_well_current_calibration(settings)
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=409,
+            detail=f"{exc} Run the test again after re-setting the centre.",
+        ) from exc
 
     test_job = {
         "id": "__ink_well_test__",
@@ -3609,6 +3653,7 @@ def plotter_set_position(
             raise HTTPException(status_code=500, detail=f"Could not read current position: {exc}") from exc
 
     with position_lock:
+        renew_position_calibration_unlocked()
         if reset_home:
             if not calibration_response or not calibration_response.startswith("OK"):
                 raise HTTPException(status_code=500, detail=f"Unexpected CS response: {calibration_response!r}")
