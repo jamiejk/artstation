@@ -3604,8 +3604,9 @@ def plotter_ink_well_update(
             "drip_dwell_ms",
             "dip_circle_count",
             "dip_circle_diameter_mm",
+            "calibration_id",
         }
-        calibration_changed = any(
+        calibration_changed = bool(payload.get("centre_from_current")) or any(
             candidate.get(key) != ink_well_settings.get(key)
             for key in calibration_keys
         )
