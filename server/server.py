@@ -927,6 +927,10 @@ def layer_dip_estimates(layers: list[dict]) -> list[dict]:
     ]
 
 
+def plot_origin_for_layer_metrics(svg_metrics: dict, paper: dict | None = None) -> dict | None:
+    return job_plot_origin_for_paper({"layers": [{"svg_metrics": svg_metrics}]}, paper)
+
+
 def require_hardware_idle() -> None:
     with jobs_lock:
         active = active_running_job_unlocked()
@@ -2712,11 +2716,12 @@ async def plot_layers(
         ink_analysis = None
         if well_snapshot is not None:
             try:
+                analysis_origin = plot_origin_for_layer_metrics(svg_metrics) or upload_home
                 ink_analysis = analyse_layer_for_ink_well(
                     input_svg,
                     digest_svg,
                     job_settings=upload_settings,
-                    home=upload_home,
+                    home=analysis_origin,
                     well=well_snapshot,
                     dip_interval_s=dip_interval_s if auto_dip else None,
                 )
@@ -3151,11 +3156,12 @@ def rerun_job(
         }
         if well_snapshot is not None:
             try:
+                analysis_origin = plot_origin_for_layer_metrics(new_layer["svg_metrics"]) or rerun_home
                 analysis = analyse_layer_for_ink_well(
                     new_input,
                     new_digest,
                     job_settings=rerun_settings,
-                    home=rerun_home,
+                    home=analysis_origin,
                     well=well_snapshot,
                     dip_interval_s=dip_interval_s if auto_dip else None,
                 )

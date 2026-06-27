@@ -185,6 +185,23 @@ class PaperSettingsTests(unittest.TestCase):
             [{"estimated_dip_count_per_layer": 2}],
         )
 
+    def test_layer_plot_origin_uses_paper_top_right(self):
+        paper = server.validate_paper_settings(
+            {
+                "size": "A3",
+                "orientation": "portrait",
+                "top_right": {"x_mm": 453.19375, "y_mm": 723.40625},
+            }
+        )
+
+        origin = server.plot_origin_for_layer_metrics(
+            {"width_mm": 291.3, "height_mm": 255.522},
+            paper,
+        )
+
+        self.assertEqual(origin["x_mm"], 161.8938)
+        self.assertEqual(origin["y_mm"], 723.4062)
+
 
 class PlotSettingsTests(unittest.TestCase):
     def test_validates_pen_positions(self):
