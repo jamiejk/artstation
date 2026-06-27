@@ -2357,20 +2357,16 @@ def worker() -> None:
                     last_completed_layer=None,
                 )
 
-                try:
-                    align_job_to_plot_origin(job, log)
-                except Exception as exc:
-                    update_job(
-                        job_id,
-                        status="failed",
-                        finished_at=now(),
-                        error=f"paper-origin alignment failed: {exc!r}",
-                        log_tail=log_tail(log_path),
+                if job.get("plot_origin"):
+                    origin = job["plot_origin"]
+                    log.write(
+                        "\nPaper origin is recorded for the UI only; "
+                        "automatic pre-plot alignment is disabled for safety. "
+                        f"origin=({float(origin.get('x_mm', 0.0)):.3f}, "
+                        f"{float(origin.get('y_mm', 0.0)):.3f}) "
+                        f"anchor={origin.get('anchor', '-')}\n"
                     )
-                    announce_on_linux_box(
-                        f"Job {job_id} failed before plotting: paper-origin alignment failed."
-                    )
-                    continue
+                    log.flush()
 
                 layers = job["layers"]
                 stop_current_job = False

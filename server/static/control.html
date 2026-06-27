@@ -219,6 +219,7 @@
       line-height: 1.35;
       overflow-wrap: anywhere;
     }
+    .spec-note.warn { color: var(--warn); }
 
     input[type="range"] { width: 100%; }
 
@@ -744,6 +745,7 @@
           </div>
           <div class="toolbar" style="margin-top: 10px">
             <button id="paperSetTopRight">Set Top Right Here</button>
+            <button id="paperUseAsHome" class="calibrate">Use Paper Top Right as Home</button>
             <button id="paperSave">Save Paper</button>
           </div>
           <div class="spec-note" id="paperStatus">Not configured.</div>
@@ -975,7 +977,10 @@
       const sizeText = paper?.width_mm && paper?.height_mm
         ? `${paper.size || "-"} ${paper.orientation || "-"} · ${Number(paper.width_mm).toFixed(1)}×${Number(paper.height_mm).toFixed(1)} mm`
         : "not configured";
-      if ($("paperStatus")) $("paperStatus").textContent = `${sizeText} · top-right ${anchorText}`;
+      if ($("paperStatus")) {
+        $("paperStatus").textContent = `${sizeText} · top-right ${anchorText}`;
+        $("paperStatus").classList.toggle("warn", Boolean(topRight && !state.positionKnown));
+      }
     }
 
     async function savePaper(extra = {}) {
@@ -1360,12 +1365,12 @@
       const home = displayHardware.home_position || null;
       const steps = displayHardware.steps || {};
       const positionSource = displayHardware.position_source || "-";
+      state.positionKnown = Boolean(pos);
       if (pos) {
         state.currentPosition = {
           x: Math.max(0, Math.min(state.bed.width, Number(pos.x_mm || 0))),
           y: Math.max(0, Math.min(state.bed.height, Number(pos.y_mm || 0))),
         };
-        state.positionKnown = true;
       }
       const displayX = state.positionKnown ? state.currentPosition.x : null;
       const displayY = state.positionKnown ? state.currentPosition.y : null;
@@ -1382,6 +1387,7 @@
         ["Pause Button", displayHardware.button_pressed === true ? "pressed" : displayHardware.button_pressed === false ? "clear" : "-"],
         ["Steps", `${steps.axis_1 ?? "-"}, ${steps.axis_2 ?? "-"}`],
         ["XY", state.positionKnown ? `${displayX.toFixed(2)} mm, ${displayY.toFixed(2)} mm` : "-"],
+        ["Calibration", state.positionKnown ? "ready" : "required — set current position/home before jogging"],
         ["XY Source", positionSource],
         ["Raw XY", `${rawX} mm, ${rawY} mm`],
         ["Offset", `${Number(offset.x_mm || 0).toFixed(2)} mm, ${Number(offset.y_mm || 0).toFixed(2)} mm`],
@@ -1404,7 +1410,15 @@
           $("headMarker").title = `Plot head: ${state.currentPosition.x.toFixed(2)}, ${state.currentPosition.y.toFixed(2)} mm`;
         } else {
           $("headMarker").style.display = "none";
+          $("headMarker").title = "Plot head position is not calibrated.";
         }
+      }
+      document.querySelectorAll("[data-x]").forEach((button) => {
+        button.disabled = !state.positionKnown;
+        button.title = state.positionKnown ? "" : "Set current position/home before jogging.";
+      });
+      if (!state.positionKnown && (state.held.x || state.held.y)) {
+        setHeld(0, 0);
       }
 
       if (home) {
@@ -1511,6 +1525,12 @@
 
     async function jogLoop() {
       if ((state.held.x || state.held.y) && !state.jogInFlight) {
+        if (!state.positionKnown) {
+          setMessage("Position calibration required before jogging. Move the head to a known point and set current/home first.");
+          setHeld(0, 0);
+          window.setTimeout(jogLoop, 25);
+          return;
+        }
         state.jogInFlight = true;
         const step = Number($("step").value);
         const speed = Number($("speed").value);
@@ -1785,6 +1805,27 @@
         withButtonFeedback("paperSetTopRight", "Saving paper top-right…", () => savePaper({ top_right_from_current: true }))
           .then(() => {
             setMessage("Paper top-right saved at the current plot-head position.");
+            refresh();
+          })
+          .catch((error) => setMessage(error.message));
+      });
+      $("paperUseAsHome").addEventListener("click", () => {
+        const topRight = state.paper?.top_right;
+        if (!topRight) {
+          setMessage("Set the paper top-right first.");
+          return;
+        }
+        withButtonFeedback(
+          "paperUseAsHome",
+          "Setting home from paper top-right…",
+          () => post("/plotter/position/set", {
+            x_mm: Number(topRight.x_mm),
+            y_mm: Number(topRight.y_mm),
+            reset_home: true,
+          })
+        )
+          .then(() => {
+            setMessage("Current position and Home set to the saved paper top-right. Use only when the head is physically at that corner.");
             refresh();
           })
           .catch((error) => setMessage(error.message));
