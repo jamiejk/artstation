@@ -1477,7 +1477,7 @@
                <button data-dip-interval-save="true" data-job-id="${escapeHtml(job.id)}">Set Interval</button>
              </div>
              <div class="spec-note">Dip Now returns to the paused position and primes pen-down on the next resume. Interval changes do not rewrite this paused job's prepared checkpoints; rerun for a regenerated schedule.</div>
-           </div>
+           </div>`
         : "";
       const recovery = job.status === "dip_failed"
         ? `<div class="toolbar" style="margin-top:8px">
