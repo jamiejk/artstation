@@ -659,7 +659,10 @@ def validate_pen_rate_raise(value: int) -> int:
 
 
 def validate_dip_interval(value: float) -> float:
-    value = float(value)
+    try:
+        value = float(value)
+    except (TypeError, ValueError) as exc:
+        raise HTTPException(status_code=400, detail="dip_interval_s must be a number") from exc
     if not math.isfinite(value) or not 1 <= value <= 86400:
         raise HTTPException(status_code=400, detail="dip_interval_s must be between 1 and 86400")
     return value
@@ -1457,6 +1460,19 @@ def _move_to_bed_target_locked(target: dict, *, speed_mm_s: float, log) -> dict:
     with serial.Serial(PLOTTER_PORT, timeout=2) as port:
         require_enabled_high_resolution_motors(port)
         return _move_to_bed_target_on_port_locked(port, target, speed_mm_s=speed_mm_s, log=log)
+
+
+def current_hardware_bed_position_locked() -> dict:
+    with serial.Serial(PLOTTER_PORT, timeout=2) as port:
+        require_enabled_high_resolution_motors(port)
+        _axis_1, _axis_2, raw_current = read_step_position(port)
+    current = current_position_estimate(raw_current)
+    if current is None:
+        raise RuntimeError("Could not calculate current hardware position")
+    with position_lock:
+        set_current_position_unlocked(current["x_mm"], current["y_mm"])
+        save_position_offset_unlocked()
+    return current
 
 
 def align_job_to_plot_origin(job: dict, log) -> dict | None:
@@ -3013,6 +3029,105 @@ def recover_dip_job(
         "job_id": job_id,
         "status": "queued_for_resume",
         "action": action,
+    }
+
+
+@app.post("/jobs/{job_id}/dip_now")
+def dip_paused_job_now(
+    job_id: str,
+    x_plotter_token: Optional[str] = Header(default=None),
+):
+    check_token(x_plotter_token)
+    require_hardware_idle()
+
+    with jobs_lock:
+        job = jobs.get(job_id)
+        if not job:
+            raise HTTPException(status_code=404, detail="Job not found")
+        if job.get("status") != "paused":
+            raise HTTPException(status_code=400, detail=f"Job is not paused: {job.get('status')!r}")
+        if not job.get("auto_dip_enabled") or not job.get("ink_well"):
+            raise HTTPException(status_code=400, detail="Job does not have automatic dipping configured")
+        log_path = Path(job["log_path"])
+
+    try:
+        with log_path.open("a", encoding="utf-8", errors="replace") as log:
+            log.write(f"\nManual Dip Now requested at {now():.3f}\n")
+            log.flush()
+            return_position = current_hardware_bed_position_locked()
+            update_job(
+                job_id,
+                status="dipping",
+                dip_phase="manual",
+                operator_message="Manual dip requested while paused.",
+            )
+            result = execute_dip_cycle(job, log, return_position=return_position)
+    except Exception as exc:
+        with log_path.open("a", encoding="utf-8", errors="replace") as log:
+            attempt_dip_clearance_raise(job, log)
+        update_job(
+            job_id,
+            status="dip_failed",
+            dip_failure={
+                "error": repr(exc),
+                "layer": job.get("current_layer") or job.get("paused_layer") or 1,
+                "phase": "manual",
+                "return_position": jobs.get(job_id, {}).get("dip_return_position"),
+                "created_at": now(),
+            },
+            operator_message=(
+                "Manual dip failed. Use Retry Dip, Skip Dip & Resume, or Cancel. "
+                "The job will not resume automatically."
+            ),
+        )
+        raise HTTPException(status_code=500, detail={"message": "Manual dip failed", "error": repr(exc)}) from exc
+
+    update_job(
+        job_id,
+        status="paused",
+        dip_count=int(job.get("dip_count", 0)) + 1,
+        last_dip=result,
+        dip_phase=None,
+        operator_message="Manual dip completed; job remains paused.",
+    )
+    return {
+        "ok": True,
+        "job_id": job_id,
+        "status": "paused",
+        "message": "Manual dip completed; job remains paused.",
+        "result": result,
+    }
+
+
+@app.post("/jobs/{job_id}/dip_interval")
+def update_job_dip_interval(
+    job_id: str,
+    payload: dict = Body(...),
+    x_plotter_token: Optional[str] = Header(default=None),
+):
+    check_token(x_plotter_token)
+    interval_s = validate_dip_interval(payload.get("dip_interval_s"))
+
+    with jobs_lock:
+        job = jobs.get(job_id)
+        if not job:
+            raise HTTPException(status_code=404, detail="Job not found")
+        if not job.get("auto_dip_enabled"):
+            raise HTTPException(status_code=400, detail="Job does not have automatic dipping configured")
+        if job.get("status") not in {"paused", "queued", "queued_for_operator", "waiting_for_operator"}:
+            raise HTTPException(status_code=400, detail=f"Job interval cannot be changed while status is {job.get('status')!r}")
+        job["dip_interval_s"] = interval_s
+        job["operator_message"] = (
+            f"Dip interval set to {interval_s:g}s. Existing prepared checkpoints are unchanged; "
+            "use Dip Now for this paused plot or rerun for a regenerated schedule."
+        )
+        save_job_unlocked(job_id)
+
+    return {
+        "ok": True,
+        "job_id": job_id,
+        "dip_interval_s": interval_s,
+        "message": jobs[job_id]["operator_message"],
     }
 
 

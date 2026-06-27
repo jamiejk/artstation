@@ -1356,6 +1356,18 @@
       const originWarning = job.status === "paused" && !job.plot_origin && state.paper?.top_right
         ? " · no paper-aligned origin; rerun recommended"
         : "";
+      const pausedDipControls = job.status === "paused" && job.auto_dip_enabled
+        ? `<div class="toolbar" style="margin-top:8px">
+             <button data-dip-now="true" data-job-id="${escapeHtml(job.id)}">Dip Now</button>
+             <label class="mono" style="display:flex;align-items:center;gap:6px">
+               Dip interval
+               <input data-dip-interval-input="${escapeHtml(job.id)}" type="number" min="1" max="86400" step="1" value="${escapeHtml(job.dip_interval_s ?? 60)}" style="width:86px">
+               s
+             </label>
+             <button data-dip-interval-save="true" data-job-id="${escapeHtml(job.id)}">Set Interval</button>
+           </div>
+           <div class="spec-note">Interval changes do not rewrite this paused job's prepared checkpoints; use Dip Now for this run, or rerun for a regenerated schedule.</div>`
+        : "";
       const recovery = job.status === "dip_failed"
         ? `<div class="toolbar" style="margin-top:8px">
              <button data-dip-action="retry" data-job-id="${escapeHtml(job.id)}">Retry Dip</button>
@@ -1368,6 +1380,7 @@
           <div class="status-pill ${escapeHtml(status)}">${escapeHtml(status)}</div>
           <div class="job-layer">${escapeHtml(layer)}</div>
           <div class="job-meta">Created ${escapeHtml(created)} · ${escapeHtml(job.layer_count || "-")} layer(s) · ${escapeHtml(speed)} · ${escapeHtml(pen)}${escapeHtml(dip)}${escapeHtml(origin)}${escapeHtml(originWarning)}${escapeHtml(message)}</div>
+          ${pausedDipControls}
           ${recovery}
         </div>
       `;
@@ -1920,6 +1933,36 @@
         )
           .then(() => {
             setMessage(`Dip recovery requested: ${button.dataset.dipAction}`);
+            refresh();
+          })
+          .catch((error) => setMessage(error.message));
+      });
+      document.addEventListener("click", (event) => {
+        const button = event.target.closest("[data-dip-now]");
+        if (!button) return;
+        withButtonFeedback(
+          button,
+          "Dipping now…",
+          () => post(`/jobs/${button.dataset.jobId}/dip_now`)
+        )
+          .then((result) => {
+            setMessage(result.message || "Manual dip completed.");
+            refresh();
+          })
+          .catch((error) => setMessage(error.message));
+      });
+      document.addEventListener("click", (event) => {
+        const button = event.target.closest("[data-dip-interval-save]");
+        if (!button) return;
+        const input = document.querySelector(`[data-dip-interval-input="${CSS.escape(button.dataset.jobId)}"]`);
+        const interval = Number(input?.value || 0);
+        withButtonFeedback(
+          button,
+          "Saving interval…",
+          () => post(`/jobs/${button.dataset.jobId}/dip_interval`, { dip_interval_s: interval })
+        )
+          .then((result) => {
+            setMessage(result.message || `Dip interval set to ${interval}s.`);
             refresh();
           })
           .catch((error) => setMessage(error.message));

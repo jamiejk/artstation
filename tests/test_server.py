@@ -785,9 +785,55 @@ class AutoDipExecutionTests(unittest.TestCase):
 
     def test_validate_dip_interval(self):
         self.assertEqual(server.validate_dip_interval(60), 60.0)
-        for value in (0, 86401, float("nan")):
+        for value in (None, "bad", 0, 86401, float("nan")):
             with self.subTest(value=value), self.assertRaises(HTTPException):
                 server.validate_dip_interval(value)
+
+    def test_updates_paused_job_dip_interval(self):
+        job = {
+            "id": "dip-job",
+            "status": "paused",
+            "auto_dip_enabled": True,
+            "dip_interval_s": 60,
+        }
+        server.jobs[job["id"]] = job
+
+        with mock.patch.object(server, "save_job_unlocked"):
+            result = server.update_job_dip_interval(
+                job["id"],
+                {"dip_interval_s": 30},
+                x_plotter_token="test-token",
+            )
+
+        self.assertEqual(result["dip_interval_s"], 30.0)
+        self.assertEqual(job["dip_interval_s"], 30.0)
+        self.assertIn("Existing prepared checkpoints are unchanged", job["operator_message"])
+
+    def test_dip_now_keeps_paused_job_paused(self):
+        job = {
+            "id": "dip-job",
+            "status": "paused",
+            "auto_dip_enabled": True,
+            "dip_count": 1,
+            "ink_well": {"centre": {"x_mm": 10, "y_mm": 20}},
+            "log_path": "/tmp/dip-job-test.log",
+            "current_layer": 1,
+        }
+        server.jobs[job["id"]] = job
+
+        with (
+            mock.patch.object(server, "require_hardware_idle"),
+            mock.patch.object(server, "current_hardware_bed_position_locked", return_value={"x_mm": 5, "y_mm": 6}),
+            mock.patch.object(server, "execute_dip_cycle", return_value={"return_error_mm": 0}) as dip,
+            mock.patch.object(server, "save_job_unlocked"),
+        ):
+            result = server.dip_paused_job_now(job["id"], x_plotter_token="test-token")
+
+        self.assertEqual(result["status"], "paused")
+        self.assertEqual(job["status"], "paused")
+        self.assertEqual(job["dip_count"], 2)
+        dip.assert_called_once()
+        self.assertEqual(dip.call_args.kwargs["return_position"], {"x_mm": 5, "y_mm": 6})
 
 
 if __name__ == "__main__":
