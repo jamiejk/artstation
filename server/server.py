@@ -1014,6 +1014,53 @@ def axicli_cmd() -> list[str]:
     return cmd
 
 
+def run_axicli_pen_manual(
+    *,
+    raised: bool,
+    up_pos: int,
+    down_pos: int,
+    raise_rate: int,
+    lower_rate: int,
+    delay_up_ms: int,
+    delay_down_ms: int,
+) -> dict:
+    if not (0 <= up_pos <= 100 and 0 <= down_pos <= 100):
+        raise ValueError("AxiCLI manual pen commands require pen positions between 0 and 100")
+    cmd = axicli_cmd() + [
+        "--mode",
+        "manual",
+        "--manual_cmd",
+        "raise_pen" if raised else "lower_pen",
+        "--port",
+        PLOTTER_PORT,
+        "--pen_pos_up",
+        str(up_pos),
+        "--pen_pos_down",
+        str(down_pos),
+        "--pen_rate_raise",
+        str(raise_rate),
+        "--pen_rate_lower",
+        str(lower_rate),
+        "--pen_delay_up",
+        str(delay_up_ms),
+        "--pen_delay_down",
+        str(delay_down_ms),
+    ]
+    proc = subprocess.run(
+        cmd,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+    )
+    return {
+        "ok": proc.returncode == 0,
+        "position": "up" if raised else "down",
+        "method": "axicli_manual",
+        "returncode": proc.returncode,
+        "output": proc.stdout,
+    }
+
+
 def generate_plot_digest(input_svg: Path, output_svg: Path, job_settings: dict) -> None:
     cmd = axicli_cmd() + [
         str(input_svg),
@@ -3486,9 +3533,8 @@ def plotter_pen(
     require_hardware_idle()
     try:
         with hardware_lock:
-            with serial.Serial(PLOTTER_PORT, timeout=2) as port:
-                result = _run_pen_servo_on_port_locked(
-                    port,
+            try:
+                result = run_axicli_pen_manual(
                     raised=position == "up",
                     up_pos=up_pos,
                     down_pos=down_pos,
@@ -3497,10 +3543,24 @@ def plotter_pen(
                     delay_up_ms=plot_defaults.get("pen_delay_up", DEFAULT_PEN_DELAY_UP),
                     delay_down_ms=plot_defaults.get("pen_delay_down", DEFAULT_PEN_DELAY_DOWN),
                 )
+            except ValueError:
+                with serial.Serial(PLOTTER_PORT, timeout=2) as port:
+                    result = _run_pen_servo_on_port_locked(
+                        port,
+                        raised=position == "up",
+                        up_pos=up_pos,
+                        down_pos=down_pos,
+                        raise_rate=plot_defaults.get("pen_rate_raise", DEFAULT_PEN_RATE_RAISE),
+                        lower_rate=DEFAULT_PEN_RATE_LOWER,
+                        delay_up_ms=plot_defaults.get("pen_delay_up", DEFAULT_PEN_DELAY_UP),
+                        delay_down_ms=plot_defaults.get("pen_delay_down", DEFAULT_PEN_DELAY_DOWN),
+                    )
     except serial.SerialException as exc:
         raise HTTPException(status_code=500, detail=str(exc)) from exc
     except RuntimeError as exc:
         raise HTTPException(status_code=500, detail=repr(exc)) from exc
+    if not result.get("ok"):
+        raise HTTPException(status_code=500, detail=result)
 
     if result["ok"] and ("pen_pos_down" in payload or "pen_pos_up" in payload):
         with pen_settings_lock:
