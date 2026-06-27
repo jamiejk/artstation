@@ -874,6 +874,11 @@
   </main>
 
   <script>
+    try {
+      (new Image()).src = "/control/config?startup_probe=1";
+    } catch (_error) {}
+  </script>
+  <script>
     function storageGet(key, fallback = "") {
       try {
         const value = localStorage.getItem(key);
