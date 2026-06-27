@@ -945,6 +945,15 @@ def apply_paper_alignment_to_job(job: dict) -> None:
     job["plot_origin"] = origin
 
 
+def job_plot_start_position(job: dict) -> dict:
+    start = job.get("plot_start_position")
+    if not isinstance(start, dict):
+        start = current_home_position()
+
+    x_mm, y_mm = validate_bed_target(start["x_mm"], start["y_mm"])
+    return {"x_mm": x_mm, "y_mm": y_mm}
+
+
 def layer_dip_estimates(layers: list[dict]) -> list[dict]:
     return [
         layer["ink_analysis"]["dip_schedule"]
@@ -2110,7 +2119,12 @@ def run_layer_with_auto_dips(
             dip_layer=layer["index"],
         )
         try:
-            result = execute_dip_cycle(job, log)
+            if phase == "initial" and not resume:
+                return_position = job_plot_start_position(job)
+            else:
+                return_position = current_hardware_bed_position_locked()
+            update_job(job["id"], dip_return_position=dict(return_position))
+            result = execute_dip_cycle(job, log, return_position=return_position)
             update_job(
                 job["id"],
                 dip_count=int(job.get("dip_count", 0)) + 1,
@@ -2833,6 +2847,7 @@ async def plot_layers(
         "current_layer_name": None,
         "last_completed_layer": None,
         "operator_message": None,
+        "plot_start_position": upload_home,
     }
     try:
         apply_paper_alignment_to_job(job)
@@ -3355,6 +3370,7 @@ def rerun_job(
         "last_completed_layer": None,
         "operator_message": None,
         "rerun_of": job_id,
+        "plot_start_position": rerun_home,
     }
     try:
         apply_paper_alignment_to_job(new_job)

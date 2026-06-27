@@ -770,12 +770,18 @@ class AutoDipExecutionTests(unittest.TestCase):
             "auto_dip_enabled": True,
             "dip_count": 0,
             "ink_well": {},
+            "plot_start_position": {"x_mm": 10, "y_mm": 20},
         }
         layer = {"index": 1}
         server.jobs[job["id"]] = job
 
         with (
             mock.patch.object(server, "execute_dip_cycle", return_value={"return_error_mm": 0}),
+            mock.patch.object(
+                server,
+                "current_hardware_bed_position_locked",
+                return_value={"x_mm": 30, "y_mm": 40},
+            ),
             mock.patch.object(server, "run_layer", return_value="auto_dip_pause") as run,
             mock.patch.object(server, "resume_layer", return_value="done") as resume,
             mock.patch.object(server, "save_job_unlocked"),
@@ -793,12 +799,14 @@ class AutoDipExecutionTests(unittest.TestCase):
             "auto_dip_enabled": True,
             "dip_count": 0,
             "ink_well": {},
+            "plot_start_position": {"x_mm": 10, "y_mm": 20},
         }
         layer = {"index": 1}
         server.jobs[job["id"]] = job
         events = []
 
-        def dip(_job, _log):
+        def dip(_job, _log, *, return_position):
+            self.assertEqual(return_position, {"x_mm": 10.0, "y_mm": 20.0})
             events.append("dip")
             return {"return_error_mm": 0}
 
@@ -817,12 +825,78 @@ class AutoDipExecutionTests(unittest.TestCase):
         self.assertEqual(events, ["dip", "plot"])
         self.assertEqual(job["dip_count"], 1)
 
+    def test_initial_auto_dip_returns_to_job_start_not_current_position(self):
+        job = {
+            "id": "dip-job",
+            "auto_dip_enabled": True,
+            "dip_count": 0,
+            "ink_well": {},
+            "plot_start_position": {"x_mm": 123, "y_mm": 456},
+        }
+        layer = {"index": 1}
+        server.jobs[job["id"]] = job
+
+        with (
+            mock.patch.object(
+                server,
+                "current_software_position",
+                return_value={"x_mm": 500, "y_mm": 800},
+            ),
+            mock.patch.object(server, "execute_dip_cycle", return_value={"return_error_mm": 0}) as dip,
+            mock.patch.object(server, "run_layer", return_value="done"),
+            mock.patch.object(server, "save_job_unlocked"),
+        ):
+            result = server.run_layer_with_auto_dips(job, layer, mock.Mock())
+
+        self.assertEqual(result, "done")
+        dip.assert_called_once()
+        self.assertEqual(
+            dip.call_args.kwargs["return_position"],
+            {"x_mm": 123.0, "y_mm": 456.0},
+        )
+
+    def test_checkpoint_auto_dip_returns_to_live_hardware_position(self):
+        job = {
+            "id": "dip-job",
+            "auto_dip_enabled": True,
+            "dip_count": 0,
+            "ink_well": {},
+            "plot_start_position": {"x_mm": 10, "y_mm": 20},
+        }
+        layer = {"index": 1}
+        server.jobs[job["id"]] = job
+
+        with (
+            mock.patch.object(server, "execute_dip_cycle", return_value={"return_error_mm": 0}) as dip,
+            mock.patch.object(
+                server,
+                "current_hardware_bed_position_locked",
+                return_value={"x_mm": 222, "y_mm": 333},
+            ) as hardware_position,
+            mock.patch.object(server, "run_layer", return_value="auto_dip_pause"),
+            mock.patch.object(server, "resume_layer", return_value="done"),
+            mock.patch.object(server, "save_job_unlocked"),
+        ):
+            result = server.run_layer_with_auto_dips(job, layer, mock.Mock())
+
+        self.assertEqual(result, "done")
+        hardware_position.assert_called_once()
+        self.assertEqual(
+            dip.call_args_list[0].kwargs["return_position"],
+            {"x_mm": 10.0, "y_mm": 20.0},
+        )
+        self.assertEqual(
+            dip.call_args_list[1].kwargs["return_position"],
+            {"x_mm": 222, "y_mm": 333},
+        )
+
     def test_dip_failure_never_starts_plot(self):
         job = {
             "id": "dip-job",
             "auto_dip_enabled": True,
             "dip_count": 0,
             "ink_well": {},
+            "plot_start_position": {"x_mm": 10, "y_mm": 20},
         }
         layer = {"index": 1}
         server.jobs[job["id"]] = job
