@@ -851,8 +851,24 @@
   </main>
 
   <script>
+    function storageGet(key, fallback = "") {
+      try {
+        return localStorage.getItem(key) ?? fallback;
+      } catch (_error) {
+        return fallback;
+      }
+    }
+
+    function storageSet(key, value) {
+      try {
+        localStorage.setItem(key, value);
+      } catch (_error) {
+        // Local storage is only a convenience cache; server state remains authoritative.
+      }
+    }
+
     const state = {
-      token: localStorage.getItem("plotterToken") || "",
+      token: storageGet("plotterToken"),
       held: { x: 0, y: 0 },
       jogInFlight: false,
       lastState: null,
@@ -1136,13 +1152,13 @@
       $("penDelayUp").value = String(payload.pen_delay_up);
       $("penRateRaise").value = String(payload.pen_rate_raise);
       await post("/plotter/plot_settings", payload);
-      localStorage.setItem("plotSpeedPendown", String(payload.speed_pendown));
-      localStorage.setItem("plotSpeedPenup", String(payload.speed_penup));
-      localStorage.setItem("plotPenDelayDown", String(payload.pen_delay_down));
-      localStorage.setItem("plotPenDelayUp", String(payload.pen_delay_up));
-      localStorage.setItem("plotPenRateRaise", String(payload.pen_rate_raise));
-      localStorage.setItem("autoDipEnabled", payload.auto_dip_enabled ? "true" : "false");
-      localStorage.setItem("autoDipIntervalS", String(payload.dip_interval_s));
+      storageSet("plotSpeedPendown", String(payload.speed_pendown));
+      storageSet("plotSpeedPenup", String(payload.speed_penup));
+      storageSet("plotPenDelayDown", String(payload.pen_delay_down));
+      storageSet("plotPenDelayUp", String(payload.pen_delay_up));
+      storageSet("plotPenRateRaise", String(payload.pen_rate_raise));
+      storageSet("autoDipEnabled", payload.auto_dip_enabled ? "true" : "false");
+      storageSet("autoDipIntervalS", String(payload.dip_interval_s));
       if (state.config) {
         state.config.speed_pendown = payload.speed_pendown;
         state.config.speed_penup = payload.speed_penup;
@@ -1188,8 +1204,8 @@
     async function sendPen(position) {
       const payload = penPayload(position);
       await post("/plotter/pen", payload);
-      localStorage.setItem("plotterPenUp", String(payload.pen_pos_up));
-      localStorage.setItem("plotterPenDown", String(payload.pen_pos_down));
+      storageSet("plotterPenUp", String(payload.pen_pos_up));
+      storageSet("plotterPenDown", String(payload.pen_pos_down));
       setMessage(`Pen ${position}: up=${payload.pen_pos_up}, down=${payload.pen_pos_down}`);
       await refresh();
       window.setTimeout(refresh, 500);
@@ -1200,8 +1216,8 @@
       $("penUpValue").value = String(payload.pen_pos_up);
       $("penDownValue").value = String(payload.pen_pos_down);
       await post("/plotter/pen_settings", payload);
-      localStorage.setItem("plotterPenUp", String(payload.pen_pos_up));
-      localStorage.setItem("plotterPenDown", String(payload.pen_pos_down));
+      storageSet("plotterPenUp", String(payload.pen_pos_up));
+      storageSet("plotterPenDown", String(payload.pen_pos_down));
       if (state.config) {
         state.config.pen_pos_up = payload.pen_pos_up;
         state.config.pen_pos_down = payload.pen_pos_down;
@@ -1223,39 +1239,39 @@
           const config = await response.json();
           state.config = config;
           state.token = config.token || state.token;
-          $("penUpValue").value = localStorage.getItem("plotterPenUp") || config.pen_pos_up || $("penUpValue").value;
-          $("penDownValue").value = localStorage.getItem("plotterPenDown") || config.pen_pos_down || $("penDownValue").value;
-          $("plotDownSpeed").value = localStorage.getItem("plotSpeedPendown") || config.speed_pendown || $("plotDownSpeed").value;
-          $("plotUpSpeed").value = localStorage.getItem("plotSpeedPenup") || config.speed_penup || $("plotUpSpeed").value;
-          $("penDelayDown").value = localStorage.getItem("plotPenDelayDown") ?? config.pen_delay_down ?? $("penDelayDown").value;
-          $("penDelayUp").value = localStorage.getItem("plotPenDelayUp") ?? config.pen_delay_up ?? $("penDelayUp").value;
-          $("penRateRaise").value = localStorage.getItem("plotPenRateRaise") ?? config.pen_rate_raise ?? $("penRateRaise").value;
-          $("speed").value = localStorage.getItem("manualMoveSpeed") || $("speed").value;
+          $("penUpValue").value = storageGet("plotterPenUp") || config.pen_pos_up || $("penUpValue").value;
+          $("penDownValue").value = storageGet("plotterPenDown") || config.pen_pos_down || $("penDownValue").value;
+          $("plotDownSpeed").value = storageGet("plotSpeedPendown") || config.speed_pendown || $("plotDownSpeed").value;
+          $("plotUpSpeed").value = storageGet("plotSpeedPenup") || config.speed_penup || $("plotUpSpeed").value;
+          $("penDelayDown").value = storageGet("plotPenDelayDown", null) ?? config.pen_delay_down ?? $("penDelayDown").value;
+          $("penDelayUp").value = storageGet("plotPenDelayUp", null) ?? config.pen_delay_up ?? $("penDelayUp").value;
+          $("penRateRaise").value = storageGet("plotPenRateRaise", null) ?? config.pen_rate_raise ?? $("penRateRaise").value;
+          $("speed").value = storageGet("manualMoveSpeed") || $("speed").value;
           $("autoDip").checked = Boolean(config.auto_dip_enabled);
           $("dipInterval").value = config.dip_interval_s ?? $("dipInterval").value;
           applyInkWell(config.ink_well || {});
           applyPaper(config.paper || {});
-          localStorage.setItem("plotterToken", state.token);
+          storageSet("plotterToken", state.token);
         } else if (!state.token) {
           state.token = prompt("Plotter token") || "";
-          localStorage.setItem("plotterToken", state.token);
+          storageSet("plotterToken", state.token);
         }
       } catch (_error) {
         if (!state.token) {
           state.token = prompt("Plotter token") || "";
-          localStorage.setItem("plotterToken", state.token);
+          storageSet("plotterToken", state.token);
         }
       }
-      $("penUpValue").value = localStorage.getItem("plotterPenUp") || $("penUpValue").value;
-      $("penDownValue").value = localStorage.getItem("plotterPenDown") || $("penDownValue").value;
-      $("plotDownSpeed").value = localStorage.getItem("plotSpeedPendown") || $("plotDownSpeed").value;
-      $("plotUpSpeed").value = localStorage.getItem("plotSpeedPenup") || $("plotUpSpeed").value;
-      $("penDelayDown").value = localStorage.getItem("plotPenDelayDown") ?? $("penDelayDown").value;
-      $("penDelayUp").value = localStorage.getItem("plotPenDelayUp") ?? $("penDelayUp").value;
-      $("penRateRaise").value = localStorage.getItem("plotPenRateRaise") ?? $("penRateRaise").value;
-      $("speed").value = localStorage.getItem("manualMoveSpeed") || $("speed").value;
-      $("autoDip").checked = Boolean(state.config?.auto_dip_enabled ?? (localStorage.getItem("autoDipEnabled") === "true"));
-      $("dipInterval").value = state.config?.dip_interval_s ?? localStorage.getItem("autoDipIntervalS") ?? $("dipInterval").value;
+      $("penUpValue").value = storageGet("plotterPenUp") || $("penUpValue").value;
+      $("penDownValue").value = storageGet("plotterPenDown") || $("penDownValue").value;
+      $("plotDownSpeed").value = storageGet("plotSpeedPendown") || $("plotDownSpeed").value;
+      $("plotUpSpeed").value = storageGet("plotSpeedPenup") || $("plotUpSpeed").value;
+      $("penDelayDown").value = storageGet("plotPenDelayDown", null) ?? $("penDelayDown").value;
+      $("penDelayUp").value = storageGet("plotPenDelayUp", null) ?? $("penDelayUp").value;
+      $("penRateRaise").value = storageGet("plotPenRateRaise", null) ?? $("penRateRaise").value;
+      $("speed").value = storageGet("manualMoveSpeed") || $("speed").value;
+      $("autoDip").checked = Boolean(state.config?.auto_dip_enabled ?? (storageGet("autoDipEnabled") === "true"));
+      $("dipInterval").value = state.config?.dip_interval_s ?? storageGet("autoDipIntervalS", null) ?? $("dipInterval").value;
       renderSpeedEstimates();
       applyInkWell(state.config?.ink_well || state.inkWell || {});
       applyPaper(state.config?.paper || state.paper || {});
@@ -1286,8 +1302,8 @@
       await Promise.all([savePlotSettings(), savePenSettings()]);
       const plot = plotSettingsPayload();
       const pen = penSettingsPayload();
-      localStorage.setItem("autoDipEnabled", $("autoDip").checked ? "true" : "false");
-      localStorage.setItem("autoDipIntervalS", String(clamp(Number($("dipInterval").value || 60), 1, 86400)));
+      storageSet("autoDipEnabled", $("autoDip").checked ? "true" : "false");
+      storageSet("autoDipIntervalS", String(clamp(Number($("dipInterval").value || 60), 1, 86400)));
       const form = new FormData();
       files.forEach((file) => form.append("files", file));
       if ($("layerNames").value.trim()) form.append("layer_names", $("layerNames").value.trim());
@@ -1722,7 +1738,7 @@
 
       $("step").addEventListener("input", () => $("stepValue").textContent = `${Number($("step").value).toFixed(1)} mm`);
       $("speed").addEventListener("input", () => {
-        localStorage.setItem("manualMoveSpeed", $("speed").value);
+        storageSet("manualMoveSpeed", $("speed").value);
         renderSpeedEstimates();
       });
 
@@ -1988,7 +2004,14 @@
       window.setInterval(refresh, 1000);
     }
 
-    main();
+    main().catch((error) => {
+      const message = error && error.message ? error.message : String(error);
+      try {
+        setMessage(`Startup error: ${message}`);
+      } catch (_ignored) {
+        console.error("Startup error:", error);
+      }
+    });
   </script>
 </body>
 </html>
