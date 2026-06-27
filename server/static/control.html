@@ -1448,7 +1448,22 @@
         ...state.jobs.filter((job) => ["queued", "queued_for_operator", "waiting_for_operator"].includes(job.status)),
         ...state.jobs,
       ];
-      return candidates.find((job) => job?.plot_footprint?.width_mm && job?.plot_footprint?.height_mm) || null;
+      return candidates.find((job) => plotFootprint(job)) || null;
+    }
+
+    function plotFootprint(job) {
+      if (!job) return null;
+      const candidates = [
+        job.plot_footprint,
+        job.plot_origin?.plot_footprint,
+        ...(job.layers || []).map((layer) => layer.svg_metrics),
+      ];
+      return candidates.find((footprint) => (
+        Number.isFinite(Number(footprint?.width_mm))
+        && Number.isFinite(Number(footprint?.height_mm))
+        && Number(footprint.width_mm) > 0
+        && Number(footprint.height_mm) > 0
+      )) || null;
     }
 
     function renderJobs(jobs) {
@@ -1459,7 +1474,9 @@
       renderJobList("queuedJobs", queuedJobs, "No queued job.");
 
       state.activeJob = state.jobs.find((job) => job.status === "running") || null;
-      state.pausedJob = state.jobs.find((job) => job.status === "paused") || null;
+      state.pausedJob = state.jobs
+        .filter((job) => job.status === "paused")
+        .sort((a, b) => Number(b.created_at || 0) - Number(a.created_at || 0))[0] || null;
 
       const historyJobs = state.jobs.filter((job) => !ACTIVE_STATUSES.has(job.status) && !QUEUED_STATUSES.has(job.status));
       $("jobsBody").innerHTML = historyJobs.slice(0, 12).map((job) => {
@@ -1494,7 +1511,7 @@
       const positionSource = displayHardware.position_source || "-";
       const positionDisplayKnown = Boolean(pos);
       state.positionCalibrationId = displayHardware.position_calibration_id || null;
-      state.positionKnown = positionDisplayKnown && positionSource === "software";
+      state.positionKnown = positionDisplayKnown && (positionSource === "software" || Boolean(home));
       if (pos) {
         state.currentPosition = {
           x: Math.max(0, Math.min(state.bed.width, Number(pos.x_mm || 0))),
@@ -1584,7 +1601,7 @@
       const paper = state.lastHardware?.paper || state.paper || state.config?.paper || null;
       const calibratedPaper = paper?.top_right && paper?.width_mm && paper?.height_mm;
       const job = footprintJob();
-      const footprint = job?.plot_footprint;
+      const footprint = plotFootprint(job);
       if (!calibratedPaper && (!home || !footprint)) {
         marker.style.display = "none";
         return null;
