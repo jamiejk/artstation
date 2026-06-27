@@ -3734,6 +3734,17 @@ def plotter_motors(
     check_token(x_plotter_token)
 
     enabled = bool(payload.get("enabled"))
+    if enabled:
+        with hardware_lock:
+            with serial.Serial(PLOTTER_PORT, timeout=1) as port:
+                motor_1, motor_2 = read_motor_resolution(port)
+        if (motor_1, motor_2) == (1, 1):
+            return {
+                "ok": True,
+                "message": "Motors already enabled; position calibration preserved.",
+                "position_invalidated": False,
+            }
+
     result = run_manual_command("enable_xy" if enabled else "disable_xy")
     invalidate_motor_resolution_cache()
     with position_lock:
@@ -3770,6 +3781,7 @@ def plotter_set_home(
         # its calibrated bed coordinate by making raw zero map to that point.
         position_offset["x_mm"] = current["x_mm"]
         position_offset["y_mm"] = current["y_mm"]
+        set_current_position_unlocked(current["x_mm"], current["y_mm"])
         set_home_position_unlocked(current["x_mm"], current["y_mm"])
         save_position_offset_unlocked()
 

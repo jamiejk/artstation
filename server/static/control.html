@@ -1467,16 +1467,17 @@
       const home = displayHardware.home_position || null;
       const steps = displayHardware.steps || {};
       const positionSource = displayHardware.position_source || "-";
+      const positionDisplayKnown = Boolean(pos);
       state.positionCalibrationId = displayHardware.position_calibration_id || null;
-      state.positionKnown = Boolean(pos);
+      state.positionKnown = positionDisplayKnown && positionSource === "software";
       if (pos) {
         state.currentPosition = {
           x: Math.max(0, Math.min(state.bed.width, Number(pos.x_mm || 0))),
           y: Math.max(0, Math.min(state.bed.height, Number(pos.y_mm || 0))),
         };
       }
-      const displayX = state.positionKnown ? state.currentPosition.x : null;
-      const displayY = state.positionKnown ? state.currentPosition.y : null;
+      const displayX = positionDisplayKnown ? state.currentPosition.x : null;
+      const displayY = positionDisplayKnown ? state.currentPosition.y : null;
       const rawX = rawPos ? Number(rawPos.x_mm || 0).toFixed(2) : "-";
       const rawY = rawPos ? Number(rawPos.y_mm || 0).toFixed(2) : "-";
       applyPaper(displayHardware.paper || state.paper || state.config?.paper || {});
@@ -1489,7 +1490,7 @@
         ["Pen", displayHardware.pen_up === true ? "up" : displayHardware.pen_up === false ? "down" : "-"],
         ["Pause Button", displayHardware.button_pressed === true ? "pressed" : displayHardware.button_pressed === false ? "clear" : "-"],
         ["Steps", `${steps.axis_1 ?? "-"}, ${steps.axis_2 ?? "-"}`],
-        ["XY", state.positionKnown ? `${displayX.toFixed(2)} mm, ${displayY.toFixed(2)} mm` : "-"],
+        ["XY", positionDisplayKnown ? `${displayX.toFixed(2)} mm, ${displayY.toFixed(2)} mm` : "-"],
         ["Calibration", state.positionKnown ? "ready" : "required — set current position/home before jogging"],
         ["XY Source", positionSource],
         ["Raw XY", `${rawX} mm, ${rawY} mm`],
@@ -1507,10 +1508,12 @@
       $("stateList").innerHTML = rows.map(([k, v]) => `<dt>${escapeHtml(k)}</dt><dd>${escapeHtml(v)}</dd>`).join("");
 
       if (!state.draggingHead) {
-        if (state.positionKnown) {
+        if (positionDisplayKnown) {
           $("headMarker").style.display = "grid";
           setMarkerPosition($("headMarker"), state.currentPosition.x, state.currentPosition.y);
-          $("headMarker").title = `Plot head: ${state.currentPosition.x.toFixed(2)}, ${state.currentPosition.y.toFixed(2)} mm`;
+          $("headMarker").title = state.positionKnown
+            ? `Plot head: ${state.currentPosition.x.toFixed(2)}, ${state.currentPosition.y.toFixed(2)} mm`
+            : `Uncalibrated step-counter estimate: ${state.currentPosition.x.toFixed(2)}, ${state.currentPosition.y.toFixed(2)} mm`;
         } else {
           $("headMarker").style.display = "none";
           $("headMarker").title = "Plot head position is not calibrated.";
