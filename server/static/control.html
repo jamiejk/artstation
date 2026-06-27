@@ -746,7 +746,7 @@
               </label>
               <button id="wellPausedDipIntervalSave">Set Interval</button>
             </div>
-            <div class="spec-note" id="wellPausedDipStatus">Pause an auto-dip job to use Dip Now or adjust this run's interval.</div>
+            <div class="spec-note" id="wellPausedDipStatus">Dip interval is saved as the default for future auto-dip jobs. Pause an auto-dip job to use Dip Now.</div>
           </div>
           <div class="spec-note" id="wellStatus">Not configured.</div>
         </div>
@@ -1507,17 +1507,22 @@
       if (!dipNow || !intervalInput || !intervalSave || !status) return;
 
       dipNow.disabled = !job;
-      intervalInput.disabled = !job;
-      intervalSave.disabled = !job;
+      intervalInput.disabled = false;
+      intervalSave.disabled = false;
       dipNow.dataset.jobId = job ? job.id : "";
       intervalSave.dataset.jobId = job ? job.id : "";
-      if (job && document.activeElement !== intervalInput) {
-        intervalInput.value = String(job.dip_interval_s != null ? job.dip_interval_s : 60);
+      if (document.activeElement !== intervalInput) {
+        const interval = job && job.dip_interval_s != null
+          ? job.dip_interval_s
+          : state.config && state.config.dip_interval_s != null
+            ? state.config.dip_interval_s
+            : 60;
+        intervalInput.value = String(interval);
       }
       status.textContent = job
-        ? `Paused job ${job.id}: Dip Now returns to the paused position and primes pen-down on the next resume. Interval changes do not rewrite prepared checkpoints; rerun for a regenerated schedule.`
-        : "Pause an auto-dip job to use Dip Now or adjust this run's interval.";
-      status.classList.toggle("warn", !job);
+        ? `Paused job ${job.id}: Dip Now returns to the paused position and primes pen-down on the next resume. Interval is also saved as the default; prepared checkpoints are unchanged until rerun.`
+        : "Dip interval is saved as the default for future auto-dip jobs. Pause an auto-dip job to use Dip Now.";
+      status.classList.toggle("warn", false);
     }
 
     function footprintJob() {
@@ -2107,18 +2112,19 @@
       });
       $("wellPausedDipIntervalSave").addEventListener("click", () => {
         const jobId = $("wellPausedDipIntervalSave").dataset.jobId;
-        if (!jobId) {
-          setMessage("Pause an auto-dip job before setting this run's dip interval.");
-          return;
-        }
         const interval = Number($("wellPausedDipInterval").value || 0);
         withButtonFeedback(
           "wellPausedDipIntervalSave",
           "Saving interval…",
-          () => post(`/jobs/${jobId}/dip_interval`, { dip_interval_s: interval })
+          async () => {
+            const plotResult = await post("/plotter/plot_settings", { dip_interval_s: interval });
+            if (state.config) state.config.dip_interval_s = plotResult.plot_settings.dip_interval_s;
+            if (!jobId) return plotResult;
+            return post(`/jobs/${jobId}/dip_interval`, { dip_interval_s: interval });
+          }
         )
           .then((result) => {
-            setMessage(result.message || `Dip interval set to ${interval}s.`);
+            setMessage(result.message || `Default dip interval set to ${interval}s.`);
             refresh();
           })
           .catch((error) => setMessage(error.message));
