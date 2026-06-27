@@ -3747,10 +3747,14 @@ def plotter_motors(
 
     result = run_manual_command("enable_xy" if enabled else "disable_xy")
     invalidate_motor_resolution_cache()
-    with position_lock:
-        invalidate_position_reference_unlocked()
-    result["position_invalidated"] = True
-    result["message"] = "Motor state changed; recalibrate before moving."
+    if enabled:
+        result["position_invalidated"] = False
+        result["message"] = "Motors enabled; position calibration preserved."
+    else:
+        with position_lock:
+            invalidate_position_reference_unlocked()
+        result["position_invalidated"] = True
+        result["message"] = "Motors disabled; recalibrate after re-enabling before moving."
     return result
 
 
