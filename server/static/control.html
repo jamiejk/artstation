@@ -519,6 +519,29 @@
       grid-column: 1 / -1;
     }
 
+    .job-controls {
+      grid-column: 1 / -1;
+      display: grid;
+      gap: 8px;
+      margin-top: 8px;
+      padding-top: 8px;
+      border-top: 1px solid var(--line);
+    }
+
+    .job-controls .toolbar {
+      margin-top: 0;
+      align-items: center;
+    }
+
+    .job-controls label {
+      min-width: 0;
+      flex-wrap: wrap;
+    }
+
+    .job-controls input {
+      max-width: 96px;
+    }
+
     .status-pill {
       align-self: start;
       border-radius: 999px;
@@ -819,7 +842,7 @@
             </div>
             <div class="form-row">
               <label for="dipInterval">Active plotting interval (s)</label>
-              <input id="dipInterval" type="number" min="1" max="86400" step="1" value="60">
+              <input id="dipInterval" type="number" min="0.1" max="86400" step="0.1" value="60">
             </div>
             <div class="spec-note" id="autoDipStatus">Auto Dip is off.</div>
             <div class="toolbar" style="margin-top:10px">
@@ -974,7 +997,7 @@
         pen_delay_up: clamp(inputNumber("penDelayUp", 0), -500, 500),
         pen_rate_raise: clamp(inputNumber("penRateRaise", 75), 1, 100),
         auto_dip_enabled: Boolean($("autoDip")?.checked),
-        dip_interval_s: clamp(inputNumber("dipInterval", 60), 1, 86400),
+        dip_interval_s: clamp(inputNumber("dipInterval", 60), 0.1, 86400),
       };
     }
 
@@ -1040,7 +1063,7 @@
 
     function renderAutoDipStatus() {
       if (!$("autoDipStatus")) return;
-      const interval = clamp(Number($("dipInterval")?.value || 60), 1, 86400);
+      const interval = clamp(Number($("dipInterval")?.value || 60), 0.1, 86400);
       const enabled = Boolean($("autoDip")?.checked);
       const ready = inkWellReadyForAutoDip();
       let text = enabled
@@ -1303,7 +1326,7 @@
       const plot = plotSettingsPayload();
       const pen = penSettingsPayload();
       storageSet("autoDipEnabled", $("autoDip").checked ? "true" : "false");
-      storageSet("autoDipIntervalS", String(clamp(Number($("dipInterval").value || 60), 1, 86400)));
+      storageSet("autoDipIntervalS", String(clamp(Number($("dipInterval").value || 60), 0.1, 86400)));
       const form = new FormData();
       files.forEach((file) => form.append("files", file));
       if ($("layerNames").value.trim()) form.append("layer_names", $("layerNames").value.trim());
@@ -1384,16 +1407,18 @@
         ? " · no paper-aligned origin; rerun recommended"
         : "";
       const pausedDipControls = job.status === "paused" && job.auto_dip_enabled
-        ? `<div class="toolbar" style="margin-top:8px">
-             <button data-dip-now="true" data-job-id="${escapeHtml(job.id)}">Dip Now</button>
-             <label class="mono" style="display:flex;align-items:center;gap:6px">
+        ? `<div class="job-controls">
+             <div class="toolbar">
+               <button data-dip-now="true" data-job-id="${escapeHtml(job.id)}">Dip Now</button>
+               <label class="mono" style="display:flex;align-items:center;gap:6px">
                Dip interval
-               <input data-dip-interval-input="${escapeHtml(job.id)}" type="number" min="1" max="86400" step="1" value="${escapeHtml(job.dip_interval_s ?? 60)}" style="width:86px">
+                 <input data-dip-interval-input="${escapeHtml(job.id)}" type="number" min="0.1" max="86400" step="0.1" value="${escapeHtml(job.dip_interval_s ?? 60)}">
                s
-             </label>
-             <button data-dip-interval-save="true" data-job-id="${escapeHtml(job.id)}">Set Interval</button>
+               </label>
+               <button data-dip-interval-save="true" data-job-id="${escapeHtml(job.id)}">Set Interval</button>
+             </div>
+             <div class="spec-note">Dip Now returns to the paused position and primes pen-down on the next resume. Interval changes do not rewrite this paused job's prepared checkpoints; rerun for a regenerated schedule.</div>
            </div>
-           <div class="spec-note">Interval changes do not rewrite this paused job's prepared checkpoints; use Dip Now for this run, or rerun for a regenerated schedule.</div>`
         : "";
       const recovery = job.status === "dip_failed"
         ? `<div class="toolbar" style="margin-top:8px">

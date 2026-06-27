@@ -969,8 +969,10 @@ class AutoDipExecutionTests(unittest.TestCase):
         self.assertEqual(raised.exception.status_code, 409)
 
     def test_validate_dip_interval(self):
+        self.assertEqual(server.validate_dip_interval(0.1), 0.1)
+        self.assertEqual(server.validate_dip_interval(0.25), 0.25)
         self.assertEqual(server.validate_dip_interval(60), 60.0)
-        for value in (None, "bad", 0, 86401, float("nan")):
+        for value in (None, "bad", 0, 0.09, 86401, float("nan")):
             with self.subTest(value=value), self.assertRaises(HTTPException):
                 server.validate_dip_interval(value)
 
@@ -1017,8 +1019,34 @@ class AutoDipExecutionTests(unittest.TestCase):
         self.assertEqual(result["status"], "paused")
         self.assertEqual(job["status"], "paused")
         self.assertEqual(job["dip_count"], 2)
+        self.assertTrue(job["manual_dip_needs_pen_down"])
         dip.assert_called_once()
         self.assertEqual(dip.call_args.kwargs["return_position"], {"x_mm": 5, "y_mm": 6})
+
+    def test_manual_dip_primes_pen_down_once_before_resume(self):
+        job = {
+            "id": "dip-job",
+            "auto_dip_enabled": True,
+            "dip_count": 0,
+            "ink_well": {},
+            "manual_dip_needs_pen_down": True,
+            "pen_pos_down": 0,
+            "pen_pos_up": 100,
+            "pen_delay_down": -50,
+            "pen_delay_up": -175,
+        }
+        layer = {"index": 1}
+        server.jobs[job["id"]] = job
+
+        with (
+            mock.patch.object(server, "prime_pen_down_after_manual_dip", return_value={"ok": True}) as prime,
+            mock.patch.object(server, "resume_layer", return_value="done"),
+            mock.patch.object(server, "save_job_unlocked"),
+        ):
+            result = server.run_layer_with_auto_dips(job, layer, mock.Mock(), resume=True)
+
+        self.assertEqual(result, "done")
+        prime.assert_called_once()
 
 
 if __name__ == "__main__":

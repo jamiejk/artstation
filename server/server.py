@@ -673,9 +673,9 @@ def validate_dip_interval(value: float) -> float:
         value = float(value)
     except (TypeError, ValueError) as exc:
         raise HTTPException(status_code=400, detail="dip_interval_s must be a number") from exc
-    if not math.isfinite(value) or not 1 <= value <= 86400:
-        raise HTTPException(status_code=400, detail="dip_interval_s must be between 1 and 86400")
-    return value
+    if not math.isfinite(value) or not 0.1 <= value <= 86400:
+        raise HTTPException(status_code=400, detail="dip_interval_s must be between 0.1 and 86400")
+    return round(value, 3)
 
 
 def resolve_auto_dip_flag(*values) -> bool:
@@ -2103,6 +2103,32 @@ def resume_layer(job: dict, layer: dict, log) -> str:
     return "failed"
 
 
+def prime_pen_down_after_manual_dip(job: dict, log) -> dict | None:
+    pending = job.get("manual_dip_needs_pen_down")
+    if not pending:
+        return None
+
+    pen_defaults = current_pen_settings()
+    plot_defaults = current_plot_settings()
+    with hardware_lock:
+        with serial.Serial(PLOTTER_PORT, timeout=2) as port:
+            require_cached_high_resolution_motors(port)
+            result = _run_pen_servo_on_port_locked(
+                port,
+                raised=False,
+                up_pos=job.get("pen_pos_up", pen_defaults["pen_pos_up"]),
+                down_pos=job.get("pen_pos_down", pen_defaults["pen_pos_down"]),
+                raise_rate=plot_defaults.get("pen_rate_raise", DEFAULT_PEN_RATE_RAISE),
+                lower_rate=DEFAULT_PEN_RATE_LOWER,
+                delay_up_ms=job.get("pen_delay_up", plot_defaults.get("pen_delay_up", DEFAULT_PEN_DELAY_UP)),
+                delay_down_ms=job.get("pen_delay_down", plot_defaults.get("pen_delay_down", DEFAULT_PEN_DELAY_DOWN)),
+                label="Prime pen down before resuming after manual dip",
+                log=log,
+            )
+    update_job(job["id"], manual_dip_needs_pen_down=False, last_manual_dip_pen_prime=result)
+    return result
+
+
 def run_layer_with_auto_dips(
     job: dict,
     layer: dict,
@@ -2160,6 +2186,8 @@ def run_layer_with_auto_dips(
         return "dip_failed"
 
     update_job(job["id"], status="running", dip_phase=None)
+    if resume:
+        prime_pen_down_after_manual_dip(job, log)
     plot_result = resume_layer(job, layer, log) if resume else run_layer(job, layer, log)
     while plot_result == "auto_dip_pause":
         if not perform_dip("checkpoint"):
@@ -3145,6 +3173,7 @@ def dip_paused_job_now(
         dip_count=int(job.get("dip_count", 0)) + 1,
         last_dip=result,
         dip_phase=None,
+        manual_dip_needs_pen_down=True,
         operator_message="Manual dip completed; job remains paused.",
     )
     return {
