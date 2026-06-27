@@ -87,6 +87,8 @@ plot_settings = {
     "pen_delay_down": 0,
     "pen_delay_up": 0,
     "pen_rate_raise": 75,
+    "auto_dip_enabled": False,
+    "dip_interval_s": 60.0,
 }
 ink_well_settings_lock = threading.RLock()
 ink_well_settings = {
@@ -389,6 +391,8 @@ def load_plot_settings() -> None:
         plot_settings["pen_delay_down"] = DEFAULT_PEN_DELAY_DOWN
         plot_settings["pen_delay_up"] = DEFAULT_PEN_DELAY_UP
         plot_settings["pen_rate_raise"] = DEFAULT_PEN_RATE_RAISE
+        plot_settings["auto_dip_enabled"] = False
+        plot_settings["dip_interval_s"] = 60.0
         if not PLOT_SETTINGS_PATH.exists():
             return
         try:
@@ -403,6 +407,12 @@ def load_plot_settings() -> None:
             )
             plot_settings["pen_rate_raise"] = validate_pen_rate_raise(
                 data.get("pen_rate_raise", plot_settings["pen_rate_raise"])
+            )
+            plot_settings["auto_dip_enabled"] = resolve_auto_dip_flag(
+                data.get("auto_dip_enabled", plot_settings["auto_dip_enabled"])
+            )
+            plot_settings["dip_interval_s"] = validate_dip_interval(
+                data.get("dip_interval_s", plot_settings["dip_interval_s"])
             )
         except Exception as exc:
             print(f"Could not load {PLOT_SETTINGS_PATH}: {exc}", flush=True)
@@ -676,6 +686,10 @@ def resolve_auto_dip_flag(*values) -> bool:
         if isinstance(value, str) and value.strip().lower() in truthy:
             return True
     return False
+
+
+def auto_dip_flag_was_provided(*values) -> bool:
+    return any(value is not None for value in values)
 
 
 def raw_xy_to_bed_xy(raw_xy: dict | None) -> dict | None:
@@ -2613,6 +2627,8 @@ def control_config(request: Request):
         "pen_delay_down": plot_defaults["pen_delay_down"],
         "pen_delay_up": plot_defaults["pen_delay_up"],
         "pen_rate_raise": plot_defaults["pen_rate_raise"],
+        "auto_dip_enabled": plot_defaults["auto_dip_enabled"],
+        "dip_interval_s": plot_defaults["dip_interval_s"],
         "ink_well": well_defaults,
         "paper": paper_defaults,
         "paper_sizes": PAPER_SIZES_MM,
@@ -2633,6 +2649,7 @@ async def plot_layers(
     pen_pos_down: Optional[int] = Form(None),
     pen_pos_up: Optional[int] = Form(None),
     auto_dip: Optional[bool] = Form(None),
+    auto_dip_enabled: Optional[bool] = Form(None),
     ink_dip: Optional[bool] = Form(None),
     ink_dipping: Optional[bool] = Form(None),
     automatic_ink_dipping: Optional[bool] = Form(None),
@@ -2650,9 +2667,16 @@ async def plot_layers(
       "Light blue,Dark blue,Black,White"
     """
     check_token(x_plotter_token)
-    auto_dip = resolve_auto_dip_flag(auto_dip, ink_dip, ink_dipping, automatic_ink_dipping, autoDip)
     pen_defaults = current_pen_settings()
     plot_defaults = current_plot_settings()
+    auto_dip_values = (auto_dip, auto_dip_enabled, ink_dip, ink_dipping, automatic_ink_dipping, autoDip)
+    auto_dip = (
+        resolve_auto_dip_flag(*auto_dip_values)
+        if auto_dip_flag_was_provided(*auto_dip_values)
+        else bool(plot_defaults.get("auto_dip_enabled"))
+    )
+    if dip_interval_s is None and auto_dip:
+        dip_interval_s = plot_defaults.get("dip_interval_s")
     if speed_pendown is None:
         speed_pendown = plot_defaults["speed_pendown"]
     if speed_penup is None:
@@ -3478,6 +3502,10 @@ def plotter_plot_settings(
             plot_settings["pen_delay_up"] = validate_pen_delay_up(payload["pen_delay_up"])
         if "pen_rate_raise" in payload:
             plot_settings["pen_rate_raise"] = validate_pen_rate_raise(payload["pen_rate_raise"])
+        if "auto_dip_enabled" in payload:
+            plot_settings["auto_dip_enabled"] = resolve_auto_dip_flag(payload["auto_dip_enabled"])
+        if "dip_interval_s" in payload:
+            plot_settings["dip_interval_s"] = validate_dip_interval(payload["dip_interval_s"])
         save_plot_settings_unlocked()
         return {"ok": True, "plot_settings": dict(plot_settings)}
 

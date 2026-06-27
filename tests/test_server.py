@@ -240,6 +240,41 @@ class PlotSettingsTests(unittest.TestCase):
         current["pen_delay_down"] = -50
         self.assertNotEqual(server.current_plot_settings()["pen_delay_down"], -50)
 
+    def test_auto_dip_is_saved_as_server_plot_setting(self):
+        request = mock.Mock()
+        request.client.host = "127.0.0.1"
+        original = server.current_plot_settings()
+
+        try:
+            result = server.plotter_plot_settings(
+                request,
+                {"auto_dip_enabled": True, "dip_interval_s": 45},
+                x_plotter_token="test-token",
+            )
+        finally:
+            with server.plot_settings_lock:
+                server.plot_settings.update(original)
+
+        self.assertTrue(result["plot_settings"]["auto_dip_enabled"])
+        self.assertEqual(result["plot_settings"]["dip_interval_s"], 45.0)
+
+    def test_auto_dip_setting_does_not_treat_false_string_as_enabled(self):
+        request = mock.Mock()
+        request.client.host = "127.0.0.1"
+        original = server.current_plot_settings()
+
+        try:
+            result = server.plotter_plot_settings(
+                request,
+                {"auto_dip_enabled": "false"},
+                x_plotter_token="test-token",
+            )
+        finally:
+            with server.plot_settings_lock:
+                server.plot_settings.update(original)
+
+        self.assertFalse(result["plot_settings"]["auto_dip_enabled"])
+
     def test_current_plot_settings_can_be_applied_to_paused_job(self):
         job = {"pen_pos_down": 35, "pen_pos_up": 60, "pen_delay_up": 0}
         settings = {

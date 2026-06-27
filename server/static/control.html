@@ -957,6 +957,8 @@
         pen_delay_down: clamp(inputNumber("penDelayDown", 0), -500, 500),
         pen_delay_up: clamp(inputNumber("penDelayUp", 0), -500, 500),
         pen_rate_raise: clamp(inputNumber("penRateRaise", 75), 1, 100),
+        auto_dip_enabled: Boolean($("autoDip")?.checked),
+        dip_interval_s: clamp(inputNumber("dipInterval", 60), 1, 86400),
       };
     }
 
@@ -1139,12 +1141,16 @@
       localStorage.setItem("plotPenDelayDown", String(payload.pen_delay_down));
       localStorage.setItem("plotPenDelayUp", String(payload.pen_delay_up));
       localStorage.setItem("plotPenRateRaise", String(payload.pen_rate_raise));
+      localStorage.setItem("autoDipEnabled", payload.auto_dip_enabled ? "true" : "false");
+      localStorage.setItem("autoDipIntervalS", String(payload.dip_interval_s));
       if (state.config) {
         state.config.speed_pendown = payload.speed_pendown;
         state.config.speed_penup = payload.speed_penup;
         state.config.pen_delay_down = payload.pen_delay_down;
         state.config.pen_delay_up = payload.pen_delay_up;
         state.config.pen_rate_raise = payload.pen_rate_raise;
+        state.config.auto_dip_enabled = payload.auto_dip_enabled;
+        state.config.dip_interval_s = payload.dip_interval_s;
       }
       renderSpeedEstimates();
       setMessage(`Plot speed: down=${formatXySpeed(payload.speed_pendown)}, up=${formatXySpeed(payload.speed_penup)}; pen delays down=${payload.pen_delay_down} ms, up=${payload.pen_delay_up} ms; raise=${payload.pen_rate_raise}%`);
@@ -1225,8 +1231,8 @@
           $("penDelayUp").value = localStorage.getItem("plotPenDelayUp") ?? config.pen_delay_up ?? $("penDelayUp").value;
           $("penRateRaise").value = localStorage.getItem("plotPenRateRaise") ?? config.pen_rate_raise ?? $("penRateRaise").value;
           $("speed").value = localStorage.getItem("manualMoveSpeed") || $("speed").value;
-          $("autoDip").checked = localStorage.getItem("autoDipEnabled") === "true";
-          $("dipInterval").value = localStorage.getItem("autoDipIntervalS") || $("dipInterval").value;
+          $("autoDip").checked = Boolean(config.auto_dip_enabled);
+          $("dipInterval").value = config.dip_interval_s ?? $("dipInterval").value;
           applyInkWell(config.ink_well || {});
           applyPaper(config.paper || {});
           localStorage.setItem("plotterToken", state.token);
@@ -1248,8 +1254,8 @@
       $("penDelayUp").value = localStorage.getItem("plotPenDelayUp") ?? $("penDelayUp").value;
       $("penRateRaise").value = localStorage.getItem("plotPenRateRaise") ?? $("penRateRaise").value;
       $("speed").value = localStorage.getItem("manualMoveSpeed") || $("speed").value;
-      $("autoDip").checked = localStorage.getItem("autoDipEnabled") === "true";
-      $("dipInterval").value = localStorage.getItem("autoDipIntervalS") || $("dipInterval").value;
+      $("autoDip").checked = Boolean(state.config?.auto_dip_enabled ?? (localStorage.getItem("autoDipEnabled") === "true"));
+      $("dipInterval").value = state.config?.dip_interval_s ?? localStorage.getItem("autoDipIntervalS") ?? $("dipInterval").value;
       renderSpeedEstimates();
       applyInkWell(state.config?.ink_well || state.inkWell || {});
       applyPaper(state.config?.paper || state.paper || {});
