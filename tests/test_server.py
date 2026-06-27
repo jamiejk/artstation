@@ -94,6 +94,39 @@ class MotionSafetyTests(unittest.TestCase):
         self.assertEqual(state["port"], "/dev/test")
 
 
+class PaperSettingsTests(unittest.TestCase):
+    def test_paper_dimensions_follow_orientation(self):
+        portrait = server.validate_paper_settings({"size": "A3", "orientation": "portrait"})
+        landscape = server.validate_paper_settings({"size": "A3", "orientation": "landscape"})
+
+        self.assertEqual(portrait["width_mm"], 297.0)
+        self.assertEqual(portrait["height_mm"], 420.0)
+        self.assertEqual(landscape["width_mm"], 420.0)
+        self.assertEqual(landscape["height_mm"], 297.0)
+
+    def test_paper_top_right_must_be_on_bed(self):
+        settings = server.validate_paper_settings(
+            {
+                "size": "A4",
+                "orientation": "portrait",
+                "top_right": {"x_mm": server.BED_WIDTH_MM, "y_mm": server.BED_HEIGHT_MM},
+            }
+        )
+        self.assertEqual(
+            settings["top_right"],
+            {"x_mm": server.BED_WIDTH_MM, "y_mm": server.BED_HEIGHT_MM},
+        )
+
+        with self.assertRaises(HTTPException):
+            server.validate_paper_settings(
+                {
+                    "size": "A4",
+                    "orientation": "portrait",
+                    "top_right": {"x_mm": server.BED_WIDTH_MM + 1, "y_mm": server.BED_HEIGHT_MM},
+                }
+            )
+
+
 class PlotSettingsTests(unittest.TestCase):
     def test_validates_pen_positions(self):
         self.assertEqual(server.validate_pen_position(0, "pen_pos_down"), 0)

@@ -42,6 +42,7 @@ POSITION_PATH = BASE_DIR / "plotter_position.json"
 PEN_SETTINGS_PATH = BASE_DIR / "plotter_pen_settings.json"
 PLOT_SETTINGS_PATH = BASE_DIR / "plotter_plot_settings.json"
 INK_WELL_SETTINGS_PATH = BASE_DIR / "plotter_ink_well_settings.json"
+PAPER_SETTINGS_PATH = BASE_DIR / "plotter_paper_settings.json"
 
 AXICLI = os.environ.get("AXICLI", str(BASE_DIR / "venv" / "bin" / "axicli"))
 PLOTTER_PORT = os.environ.get("PLOTTER_PORT", "/dev/ttyACM0")
@@ -100,6 +101,20 @@ ink_well_settings = {
     "dip_circle_diameter_mm": 10.0,
     "test_passed": False,
     "tested_at": None,
+}
+PAPER_SIZES_MM = {
+    "A0": {"width_mm": 841.0, "height_mm": 1189.0},
+    "A1": {"width_mm": 594.0, "height_mm": 841.0},
+    "A2": {"width_mm": 420.0, "height_mm": 594.0},
+    "A3": {"width_mm": 297.0, "height_mm": 420.0},
+    "A4": {"width_mm": 210.0, "height_mm": 297.0},
+}
+paper_settings_lock = threading.RLock()
+paper_settings = {
+    "state_version": 1,
+    "size": "A3",
+    "orientation": "portrait",
+    "top_right": None,
 }
 POSITION_STATE_VERSION = 2
 
@@ -393,6 +408,75 @@ def apply_plot_settings_to_job(job: dict, settings: dict) -> None:
         "pen_rate_raise",
     ):
         job[key] = settings[key]
+
+
+def paper_dimensions(settings: dict) -> dict:
+    size = str(settings.get("size") or "A3").upper()
+    if size not in PAPER_SIZES_MM:
+        raise ValueError(f"Unsupported paper size: {size}")
+    orientation = str(settings.get("orientation") or "portrait").lower()
+    if orientation not in {"portrait", "landscape"}:
+        raise ValueError("Paper orientation must be portrait or landscape")
+    base = PAPER_SIZES_MM[size]
+    width = base["width_mm"]
+    height = base["height_mm"]
+    if orientation == "landscape":
+        width, height = height, width
+    return {"width_mm": width, "height_mm": height}
+
+
+def validate_paper_settings(settings: dict) -> dict:
+    size = str(settings.get("size") or "A3").upper()
+    orientation = str(settings.get("orientation") or "portrait").lower()
+    candidate = {
+        "state_version": 1,
+        "size": size,
+        "orientation": orientation,
+        "top_right": settings.get("top_right"),
+    }
+    dimensions = paper_dimensions(candidate)
+    top_right = candidate.get("top_right")
+    if top_right is not None:
+        if not isinstance(top_right, dict) or "x_mm" not in top_right or "y_mm" not in top_right:
+            raise ValueError("Paper top_right must contain x_mm and y_mm")
+        x_mm, y_mm = validate_bed_target(top_right["x_mm"], top_right["y_mm"])
+        candidate["top_right"] = {"x_mm": x_mm, "y_mm": y_mm}
+    candidate.update(dimensions)
+    return candidate
+
+
+def load_paper_settings() -> None:
+    with paper_settings_lock:
+        defaults = validate_paper_settings(
+            {
+                "state_version": 1,
+                "size": "A3",
+                "orientation": "portrait",
+                "top_right": None,
+            }
+        )
+        paper_settings.clear()
+        paper_settings.update(defaults)
+        if not PAPER_SETTINGS_PATH.exists():
+            return
+        try:
+            data = json.loads(PAPER_SETTINGS_PATH.read_text(encoding="utf-8"))
+            if data.get("state_version") != 1:
+                raise ValueError("unsupported state version")
+            candidate = dict(defaults)
+            candidate.update(data)
+            paper_settings.update(validate_paper_settings(candidate))
+        except Exception as exc:
+            print(f"Could not load {PAPER_SETTINGS_PATH}: {exc}", flush=True)
+
+
+def save_paper_settings_unlocked() -> None:
+    PAPER_SETTINGS_PATH.write_text(json.dumps(paper_settings, indent=2), encoding="utf-8")
+
+
+def current_paper_settings() -> dict:
+    with paper_settings_lock:
+        return json.loads(json.dumps(paper_settings))
 
 
 def load_ink_well_settings() -> None:
@@ -1459,6 +1543,7 @@ def overlay_live_hardware_fields(state: dict) -> dict:
         else:
             result["position_estimate"] = current_position_estimate(raw_xy_mm)
     result["active_process"] = {"pid": active_pid, "job_id": active_job}
+    result["paper"] = current_paper_settings()
     return result
 
 
@@ -2294,6 +2379,7 @@ def worker() -> None:
 load_position_offset()
 load_pen_settings()
 load_plot_settings()
+load_paper_settings()
 load_ink_well_settings()
 load_jobs()
 if os.environ.get("PLOTTER_DISABLE_WORKER") != "1":
@@ -2329,6 +2415,7 @@ def control_config(request: Request):
     pen_defaults = current_pen_settings()
     plot_defaults = current_plot_settings()
     well_defaults = current_ink_well_settings()
+    paper_defaults = current_paper_settings()
     forwarded_proto = request.headers.get("x-forwarded-proto")
     scheme = forwarded_proto or request.url.scheme
     http_host = request.headers.get("host") or f"{request.url.hostname}:{request.url.port}"
@@ -2347,6 +2434,8 @@ def control_config(request: Request):
         "pen_delay_up": plot_defaults["pen_delay_up"],
         "pen_rate_raise": plot_defaults["pen_rate_raise"],
         "ink_well": well_defaults,
+        "paper": paper_defaults,
+        "paper_sizes": PAPER_SIZES_MM,
         "motion_spec": motion_spec(),
         "axicli_config": str(AXICLI_CONFIG) if AXICLI_CONFIG.exists() else None,
     }
@@ -3095,6 +3184,48 @@ def plotter_plot_settings(
             plot_settings["pen_rate_raise"] = validate_pen_rate_raise(payload["pen_rate_raise"])
         save_plot_settings_unlocked()
         return {"ok": True, "plot_settings": dict(plot_settings)}
+
+
+@app.get("/plotter/paper")
+def plotter_paper(
+    request: Request,
+    x_plotter_token: Optional[str] = Header(default=None),
+):
+    require_localhost(request)
+    check_token(x_plotter_token)
+    return {"paper": current_paper_settings(), "paper_sizes": PAPER_SIZES_MM}
+
+
+@app.post("/plotter/paper")
+def plotter_paper_update(
+    request: Request,
+    payload: dict = Body(...),
+    x_plotter_token: Optional[str] = Header(default=None),
+):
+    require_localhost(request)
+    check_token(x_plotter_token)
+
+    editable = {"size", "orientation", "top_right"}
+    unknown = set(payload) - editable - {"top_right_from_current"}
+    if unknown:
+        raise HTTPException(status_code=400, detail=f"Unknown paper fields: {', '.join(sorted(unknown))}")
+
+    with paper_settings_lock:
+        candidate = current_paper_settings()
+        if payload.get("top_right_from_current"):
+            candidate["top_right"] = current_software_position()
+        for key in editable:
+            if key in payload:
+                candidate[key] = payload[key]
+        try:
+            validated = validate_paper_settings(candidate)
+        except (ValueError, HTTPException) as exc:
+            detail = exc.detail if isinstance(exc, HTTPException) else str(exc)
+            raise HTTPException(status_code=400, detail=detail) from exc
+        paper_settings.clear()
+        paper_settings.update(validated)
+        save_paper_settings_unlocked()
+        return {"ok": True, "paper": current_paper_settings(), "paper_sizes": PAPER_SIZES_MM}
 
 
 @app.get("/plotter/ink_well")

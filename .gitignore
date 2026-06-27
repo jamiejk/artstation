@@ -19,6 +19,7 @@ plotter_pen_settings.json
 plotter_plot_settings.json
 plotter_position.json
 plotter_ink_well_settings.json
+plotter_paper_settings.json
 *.pid
 *.log
 

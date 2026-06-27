@@ -717,6 +717,40 @@
       </section>
 
       <section>
+        <div class="section-head">Paper</div>
+        <div class="section-body">
+          <div class="pen-grid">
+            <div class="pen-control">
+              <label for="paperSize">Sheet size</label>
+              <span></span>
+              <select id="paperSize">
+                <option value="A4">A4</option>
+                <option value="A3" selected>A3</option>
+                <option value="A2">A2</option>
+                <option value="A1">A1</option>
+                <option value="A0">A0</option>
+              </select>
+              <span></span>
+            </div>
+            <div class="pen-control">
+              <label for="paperOrientation">Orientation</label>
+              <span></span>
+              <select id="paperOrientation">
+                <option value="portrait" selected>Portrait</option>
+                <option value="landscape">Landscape</option>
+              </select>
+              <span></span>
+            </div>
+          </div>
+          <div class="toolbar" style="margin-top: 10px">
+            <button id="paperSetTopRight">Set Top Right Here</button>
+            <button id="paperSave">Save Paper</button>
+          </div>
+          <div class="spec-note" id="paperStatus">Not configured.</div>
+        </div>
+      </section>
+
+      <section>
         <div class="section-head">State</div>
         <div class="section-body">
           <dl id="stateList"></dl>
@@ -831,6 +865,7 @@
       currentPosition: { x: 0, y: 0 },
       positionKnown: false,
       inkWell: null,
+      paper: null,
     };
 
     const $ = (id) => document.getElementById(id);
@@ -916,6 +951,38 @@
         dip_circle_diameter_mm: clamp(inputNumber("wellDipCircleDiameter", 10), 0, 50),
         drip_dwell_ms: clamp(inputNumber("wellDripDwell", 0), 0, 30000),
       };
+    }
+
+    function paperPayload() {
+      return {
+        size: $("paperSize").value,
+        orientation: $("paperOrientation").value,
+      };
+    }
+
+    function applyPaper(paper) {
+      state.paper = paper || {};
+      if ($("paperSize") && paper?.size && document.activeElement !== $("paperSize")) {
+        $("paperSize").value = paper.size;
+      }
+      if ($("paperOrientation") && paper?.orientation && document.activeElement !== $("paperOrientation")) {
+        $("paperOrientation").value = paper.orientation;
+      }
+      const topRight = paper?.top_right;
+      const anchorText = topRight
+        ? `${Number(topRight.x_mm).toFixed(1)}, ${Number(topRight.y_mm).toFixed(1)} mm`
+        : "not set";
+      const sizeText = paper?.width_mm && paper?.height_mm
+        ? `${paper.size || "-"} ${paper.orientation || "-"} · ${Number(paper.width_mm).toFixed(1)}×${Number(paper.height_mm).toFixed(1)} mm`
+        : "not configured";
+      if ($("paperStatus")) $("paperStatus").textContent = `${sizeText} · top-right ${anchorText}`;
+    }
+
+    async function savePaper(extra = {}) {
+      const result = await post("/plotter/paper", Object.assign(paperPayload(), extra));
+      applyPaper(result.paper);
+      if (state.config) state.config.paper = result.paper;
+      return result;
     }
 
     function applyInkWell(well) {
@@ -1102,6 +1169,7 @@
           $("penRateRaise").value = localStorage.getItem("plotPenRateRaise") ?? config.pen_rate_raise ?? $("penRateRaise").value;
           $("speed").value = localStorage.getItem("manualMoveSpeed") || $("speed").value;
           applyInkWell(config.ink_well || {});
+          applyPaper(config.paper || {});
           localStorage.setItem("plotterToken", state.token);
         } else if (!state.token) {
           state.token = prompt("Plotter token") || "";
@@ -1123,6 +1191,7 @@
       $("speed").value = localStorage.getItem("manualMoveSpeed") || $("speed").value;
       renderSpeedEstimates();
       applyInkWell(state.config?.ink_well || state.inkWell || {});
+      applyPaper(state.config?.paper || state.paper || {});
       renderServerInfo();
     }
 
@@ -1296,6 +1365,7 @@
       const displayY = state.positionKnown ? state.currentPosition.y : null;
       const rawX = rawPos ? Number(rawPos.x_mm || 0).toFixed(2) : "-";
       const rawY = rawPos ? Number(rawPos.y_mm || 0).toFixed(2) : "-";
+      applyPaper(displayHardware.paper || state.paper || state.config?.paper || {});
       if (!state.jobs.length && data.jobs) renderJobs(data.jobs);
       const sheetOverlay = applySheetOverlay(home);
       const rows = [
@@ -1313,7 +1383,7 @@
         [
           "Plot Footprint",
           sheetOverlay
-            ? `${sheetOverlay.width.toFixed(1)} × ${sheetOverlay.height.toFixed(1)} mm from Home${sheetOverlay.offBed ? " — off bed" : ""}`
+            ? `${sheetOverlay.width.toFixed(1)} × ${sheetOverlay.height.toFixed(1)} mm ${sheetOverlay.calibratedPaper ? "paper" : "from Home"}${sheetOverlay.offBed ? " — off bed" : ""}`
             : "-",
         ],
         ["Queue", server.queue_size ?? "-"],
@@ -1359,16 +1429,18 @@
 
     function applySheetOverlay(home) {
       const marker = $("sheetMarker");
+      const paper = state.lastHardware?.paper || state.paper || state.config?.paper || null;
+      const calibratedPaper = paper?.top_right && paper?.width_mm && paper?.height_mm;
       const job = footprintJob();
       const footprint = job?.plot_footprint;
-      if (!home || !footprint) {
+      if (!calibratedPaper && (!home || !footprint)) {
         marker.style.display = "none";
         return null;
       }
-      const x = Number(home.x_mm);
-      const y = Number(home.y_mm);
-      const width = Number(footprint.width_mm);
-      const height = Number(footprint.height_mm);
+      const x = calibratedPaper ? Number(paper.top_right.x_mm) - Number(paper.width_mm) : Number(home.x_mm);
+      const y = calibratedPaper ? Number(paper.top_right.y_mm) : Number(home.y_mm);
+      const width = calibratedPaper ? Number(paper.width_mm) : Number(footprint.width_mm);
+      const height = calibratedPaper ? Number(paper.height_mm) : Number(footprint.height_mm);
       if (![x, y, width, height].every(Number.isFinite) || width <= 0 || height <= 0) {
         marker.style.display = "none";
         return null;
@@ -1380,13 +1452,17 @@
       marker.style.width = `${(width / state.bed.width) * 100}%`;
       marker.style.height = `${(height / state.bed.height) * 100}%`;
       marker.classList.toggle("warn", offBed);
-      marker.dataset.label = `${width.toFixed(1)}×${height.toFixed(1)} mm`;
+      marker.dataset.label = calibratedPaper
+        ? `${paper.size || "paper"} ${paper.orientation || ""}`
+        : `${width.toFixed(1)}×${height.toFixed(1)} mm`;
       marker.title = [
-        `Plot footprint from Home for ${job.id || "current job"}`,
+        calibratedPaper
+          ? `Paper from calibrated top-right corner`
+          : `Plot footprint from Home for ${job.id || "current job"}`,
         `${width.toFixed(1)} × ${height.toFixed(1)} mm`,
         offBed ? "Warning: this footprint extends outside the calibrated bed." : "Within calibrated bed.",
       ].join("\n");
-      return { job, width, height, offBed };
+      return { job, width, height, offBed, calibratedPaper, paper };
     }
 
     async function moveToTarget(target) {
@@ -1694,6 +1770,30 @@
             setMessage(result.ink_well.installed ? "Ink well marked installed; keep-out is active for every upload." : "Ink well marked removed.");
           })
           .catch((error) => setMessage(error.message));
+      });
+      $("paperSetTopRight").addEventListener("click", () => {
+        withButtonFeedback("paperSetTopRight", "Saving paper top-right…", () => savePaper({ top_right_from_current: true }))
+          .then(() => {
+            setMessage("Paper top-right saved at the current plot-head position.");
+            refresh();
+          })
+          .catch((error) => setMessage(error.message));
+      });
+      $("paperSave").addEventListener("click", () => {
+        withButtonFeedback("paperSave", "Saving paper…", () => savePaper())
+          .then(() => {
+            setMessage("Paper settings saved.");
+            refresh();
+          })
+          .catch((error) => setMessage(error.message));
+      });
+      $("paperSize").addEventListener("change", () => {
+        setMessage("Saving paper size…");
+        savePaper().then(() => refresh()).catch((error) => setMessage(error.message));
+      });
+      $("paperOrientation").addEventListener("change", () => {
+        setMessage("Saving paper orientation…");
+        savePaper().then(() => refresh()).catch((error) => setMessage(error.message));
       });
       document.addEventListener("click", (event) => {
         const button = event.target.closest("[data-dip-action]");

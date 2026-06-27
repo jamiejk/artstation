@@ -67,5 +67,6 @@ The direct layer stores local calibration state in runtime JSON files, not in Gi
 - `plotter_pen_settings.json`
 - `plotter_plot_settings.json`
 - `plotter_ink_well_settings.json`
+- `plotter_paper_settings.json`
 
 These files describe the local machine setup and should not be published as project defaults.
