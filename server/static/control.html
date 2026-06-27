@@ -1283,6 +1283,12 @@
       const pen = `pen down ${job.pen_pos_down ?? "-"} / up ${job.pen_pos_up ?? "-"} / delays ${job.pen_delay_down ?? 0},${job.pen_delay_up ?? 0} ms / raise ${job.pen_rate_raise ?? 75}%`;
       const message = job.operator_message ? ` · ${job.operator_message}` : "";
       const dip = job.auto_dip_enabled ? ` · auto dip ${job.dip_interval_s}s (${job.dip_count || 0} completed)` : "";
+      const origin = job.plot_origin
+        ? ` · origin ${Number(job.plot_origin.x_mm).toFixed(1)}, ${Number(job.plot_origin.y_mm).toFixed(1)} mm`
+        : "";
+      const originWarning = job.status === "paused" && !job.plot_origin && state.paper?.top_right
+        ? " · no paper-aligned origin; rerun recommended"
+        : "";
       const recovery = job.status === "dip_failed"
         ? `<div class="toolbar" style="margin-top:8px">
              <button data-dip-action="retry" data-job-id="${escapeHtml(job.id)}">Retry Dip</button>
@@ -1294,7 +1300,7 @@
           <div class="job-id mono">${escapeHtml(job.id || "-")}</div>
           <div class="status-pill ${escapeHtml(status)}">${escapeHtml(status)}</div>
           <div class="job-layer">${escapeHtml(layer)}</div>
-          <div class="job-meta">Created ${escapeHtml(created)} · ${escapeHtml(job.layer_count || "-")} layer(s) · ${escapeHtml(speed)} · ${escapeHtml(pen)}${escapeHtml(dip)}${escapeHtml(message)}</div>
+          <div class="job-meta">Created ${escapeHtml(created)} · ${escapeHtml(job.layer_count || "-")} layer(s) · ${escapeHtml(speed)} · ${escapeHtml(pen)}${escapeHtml(dip)}${escapeHtml(origin)}${escapeHtml(originWarning)}${escapeHtml(message)}</div>
           ${recovery}
         </div>
       `;
@@ -1706,6 +1712,10 @@
         }
         if (state.pausedJob) {
           const jobId = state.pausedJob.id;
+          if (!state.pausedJob.plot_origin && state.paper?.top_right) {
+            setMessage(`Paused job ${jobId} has no paper-aligned origin. Rerun it from the beginning instead of resuming.`);
+            return;
+          }
           withButtonFeedback(
             "operatorContinue",
             "Resuming job…",

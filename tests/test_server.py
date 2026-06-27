@@ -126,6 +126,53 @@ class PaperSettingsTests(unittest.TestCase):
                 }
             )
 
+    def test_job_plot_origin_aligns_svg_right_edge_to_paper_top_right(self):
+        job = {
+            "layers": [
+                {
+                    "svg_metrics": {
+                        "width_mm": 291.3,
+                        "height_mm": 255.522,
+                    }
+                }
+            ]
+        }
+        paper = server.validate_paper_settings(
+            {
+                "size": "A3",
+                "orientation": "portrait",
+                "top_right": {"x_mm": 502.6125, "y_mm": 725.15},
+            }
+        )
+
+        origin = server.job_plot_origin_for_paper(job, paper)
+
+        self.assertEqual(origin["x_mm"], 211.3125)
+        self.assertEqual(origin["y_mm"], 725.15)
+        self.assertEqual(origin["anchor"], "paper_top_right")
+
+    def test_job_plot_origin_rejects_plot_larger_than_paper(self):
+        job = {
+            "layers": [
+                {
+                    "svg_metrics": {
+                        "width_mm": 300,
+                        "height_mm": 200,
+                    }
+                }
+            ]
+        }
+        paper = server.validate_paper_settings(
+            {
+                "size": "A4",
+                "orientation": "portrait",
+                "top_right": {"x_mm": 400, "y_mm": 500},
+            }
+        )
+
+        with self.assertRaisesRegex(ValueError, "exceeds"):
+            server.job_plot_origin_for_paper(job, paper)
+
 
 class PlotSettingsTests(unittest.TestCase):
     def test_validates_pen_positions(self):

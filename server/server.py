@@ -843,6 +843,48 @@ def job_plot_footprint(job: dict) -> dict | None:
     }
 
 
+def job_plot_origin_for_paper(job: dict, paper: dict | None = None) -> dict | None:
+    paper = paper or current_paper_settings()
+    top_right = paper.get("top_right")
+    footprint = job_plot_footprint(job)
+    if not top_right or not footprint:
+        return None
+
+    plot_width = float(footprint["width_mm"])
+    plot_height = float(footprint["height_mm"])
+    paper_width = float(paper["width_mm"])
+    paper_height = float(paper["height_mm"])
+    if plot_width > paper_width or plot_height > paper_height:
+        raise ValueError(
+            f"Plot footprint {plot_width:.1f}×{plot_height:.1f} mm exceeds "
+            f"{paper.get('size', 'paper')} {paper.get('orientation', '')} "
+            f"{paper_width:.1f}×{paper_height:.1f} mm"
+        )
+
+    x_mm = float(top_right["x_mm"]) - plot_width
+    y_mm = float(top_right["y_mm"])
+    validate_bed_target(x_mm, y_mm)
+    validate_bed_target(float(top_right["x_mm"]), y_mm - plot_height)
+    return {
+        "x_mm": round(x_mm, 4),
+        "y_mm": round(y_mm, 4),
+        "anchor": "paper_top_right",
+        "paper_top_right": dict(top_right),
+        "plot_footprint": footprint,
+    }
+
+
+def apply_paper_alignment_to_job(job: dict) -> None:
+    paper = current_paper_settings()
+    origin = job_plot_origin_for_paper(job, paper)
+    if origin is None:
+        job["paper"] = paper
+        job["plot_origin"] = None
+        return
+    job["paper"] = paper
+    job["plot_origin"] = origin
+
+
 def require_hardware_idle() -> None:
     with jobs_lock:
         active = active_running_job_unlocked()
@@ -1369,6 +1411,60 @@ def _move_to_bed_target_locked(target: dict, *, speed_mm_s: float, log) -> dict:
     with serial.Serial(PLOTTER_PORT, timeout=2) as port:
         require_enabled_high_resolution_motors(port)
         return _move_to_bed_target_on_port_locked(port, target, speed_mm_s=speed_mm_s, log=log)
+
+
+def align_job_to_plot_origin(job: dict, log) -> dict | None:
+    origin = job.get("plot_origin")
+    if not isinstance(origin, dict):
+        return None
+    target_x, target_y = validate_bed_target(origin["x_mm"], origin["y_mm"])
+    pen_defaults = current_pen_settings()
+    plot_defaults = current_plot_settings()
+    log.write(
+        f"\nAligning job origin to paper: ({target_x:.3f}, {target_y:.3f}) "
+        f"anchor={origin.get('anchor', '-')}\n"
+    )
+    log.flush()
+
+    with hardware_lock:
+        with serial.Serial(PLOTTER_PORT, timeout=2) as port:
+            require_cached_high_resolution_motors(port)
+            _run_pen_servo_on_port_locked(
+                port,
+                raised=True,
+                up_pos=pen_defaults["pen_pos_up"],
+                down_pos=pen_defaults["pen_pos_down"],
+                raise_rate=plot_defaults.get("pen_rate_raise", DEFAULT_PEN_RATE_RAISE),
+                lower_rate=DEFAULT_PEN_RATE_LOWER,
+                delay_up_ms=plot_defaults.get("pen_delay_up", DEFAULT_PEN_DELAY_UP),
+                delay_down_ms=plot_defaults.get("pen_delay_down", DEFAULT_PEN_DELAY_DOWN),
+                label="Raise pen before paper-origin alignment",
+                log=log,
+            )
+            actual = _move_to_bed_target_on_port_locked(
+                port,
+                {"x_mm": target_x, "y_mm": target_y},
+                speed_mm_s=min(SAFE_MANUAL_MAX_XY_SPEED_MM_S, 120.0),
+                log=log,
+            )
+            response = raw_command(port, "CS\r")
+            if not response.startswith("OK"):
+                raise RuntimeError(f"Unexpected CS response while aligning job origin: {response!r}")
+
+    with position_lock:
+        position_offset["x_mm"] = target_x
+        position_offset["y_mm"] = target_y
+        set_home_position_unlocked(target_x, target_y)
+        set_current_position_unlocked(target_x, target_y)
+        save_position_offset_unlocked()
+
+    result = {
+        "requested_position": {"x_mm": target_x, "y_mm": target_y},
+        "actual_before_zero": actual,
+        "controller_zero_response": response,
+    }
+    update_job(job["id"], last_origin_alignment=result)
+    return result
 
 
 def _run_bed_delta_locked(
@@ -2261,6 +2357,21 @@ def worker() -> None:
                     last_completed_layer=None,
                 )
 
+                try:
+                    align_job_to_plot_origin(job, log)
+                except Exception as exc:
+                    update_job(
+                        job_id,
+                        status="failed",
+                        finished_at=now(),
+                        error=f"paper-origin alignment failed: {exc!r}",
+                        log_tail=log_tail(log_path),
+                    )
+                    announce_on_linux_box(
+                        f"Job {job_id} failed before plotting: paper-origin alignment failed."
+                    )
+                    continue
+
                 layers = job["layers"]
                 stop_current_job = False
 
@@ -2624,6 +2735,10 @@ async def plot_layers(
         "last_completed_layer": None,
         "operator_message": None,
     }
+    try:
+        apply_paper_alignment_to_job(job)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
     with jobs_lock:
         jobs[job_id] = job
@@ -2679,6 +2794,8 @@ def list_jobs(
                     "dip_count": job.get("dip_count", 0),
                     "dip_failure": job.get("dip_failure"),
                     "plot_footprint": job_plot_footprint(job),
+                    "plot_origin": job.get("plot_origin"),
+                    "paper": job.get("paper"),
                     "rerun_of": job.get("rerun_of"),
                     "log_path": job.get("log_path"),
                 }
@@ -3042,6 +3159,10 @@ def rerun_job(
         "operator_message": None,
         "rerun_of": job_id,
     }
+    try:
+        apply_paper_alignment_to_job(new_job)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
     with jobs_lock:
         jobs[new_job_id] = new_job
@@ -3073,6 +3194,8 @@ def plotter_state(
                 "current_layer_name": job.get("current_layer_name"),
                 "operator_message": job.get("operator_message"),
                 "plot_footprint": job_plot_footprint(job),
+                "plot_origin": job.get("plot_origin"),
+                "paper": job.get("paper"),
             }
             for job in sorted(jobs.values(), key=lambda item: item.get("created_at") or 0, reverse=True)[:5]
         ]
