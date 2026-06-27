@@ -366,6 +366,36 @@
     .bed-label.bottom { bottom: 4px; transform: translateX(-50%); }
     .bed-label.right { right: 4px; transform: translateY(50%); }
 
+    .sheet-marker {
+      position: absolute;
+      border: 2px solid rgba(15, 118, 110, 0.85);
+      background: rgba(20, 184, 166, 0.08);
+      box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.7);
+      display: none;
+      pointer-events: none;
+    }
+
+    .sheet-marker.warn {
+      border-color: rgba(180, 35, 24, 0.9);
+      background: rgba(244, 63, 94, 0.12);
+    }
+
+    .sheet-marker::after {
+      content: attr(data-label);
+      position: absolute;
+      left: 4px;
+      top: 4px;
+      color: var(--accent);
+      background: rgba(255, 255, 255, 0.86);
+      border-radius: 4px;
+      padding: 1px 4px;
+      font-size: 11px;
+      font-weight: 750;
+      white-space: nowrap;
+    }
+
+    .sheet-marker.warn::after { color: var(--danger); }
+
     .target-marker {
       position: absolute;
       transform: translate(-50%, -50%);
@@ -713,6 +743,7 @@
             <div class="axis-y"></div>
             <div class="pcb-marker"></div>
             <div class="calibration-marker" title="Calibration point: top-left, nearest PCB">C</div>
+            <div class="sheet-marker" id="sheetMarker"></div>
             <div class="home-marker" id="homeMarker" title="User-defined home">+</div>
             <div class="bed-label bottom" style="left: 0%">0</div>
             <div class="bed-label bottom" style="left: 25%">152</div>
@@ -1204,6 +1235,15 @@
       $(elementId).innerHTML = jobs.length ? jobs.map(jobCard).join("") : `<div class="empty-state">${escapeHtml(emptyText)}</div>`;
     }
 
+    function footprintJob() {
+      const candidates = [
+        ...state.jobs.filter((job) => ["running", "paused", "queued_for_resume", "dipping", "dip_failed"].includes(job.status)),
+        ...state.jobs.filter((job) => ["queued", "queued_for_operator", "waiting_for_operator"].includes(job.status)),
+        ...state.jobs,
+      ];
+      return candidates.find((job) => job?.plot_footprint?.width_mm && job?.plot_footprint?.height_mm) || null;
+    }
+
     function renderJobs(jobs) {
       state.jobs = jobs || [];
       const activeJobs = state.jobs.filter((job) => ACTIVE_STATUSES.has(job.status));
@@ -1256,6 +1296,8 @@
       const displayY = state.positionKnown ? state.currentPosition.y : null;
       const rawX = rawPos ? Number(rawPos.x_mm || 0).toFixed(2) : "-";
       const rawY = rawPos ? Number(rawPos.y_mm || 0).toFixed(2) : "-";
+      if (!state.jobs.length && data.jobs) renderJobs(data.jobs);
+      const sheetOverlay = applySheetOverlay(home);
       const rows = [
         ["Hardware", hardware.busy ? (hardware.message || "updating") : hardware.connected === false ? "disconnected" : "ready"],
         ["Port", displayHardware.port || "-"],
@@ -1268,6 +1310,12 @@
         ["Raw XY", `${rawX} mm, ${rawY} mm`],
         ["Offset", `${Number(offset.x_mm || 0).toFixed(2)} mm, ${Number(offset.y_mm || 0).toFixed(2)} mm`],
         ["Home", home ? `${Number(home.x_mm).toFixed(2)} mm, ${Number(home.y_mm).toFixed(2)} mm` : "-"],
+        [
+          "Plot Footprint",
+          sheetOverlay
+            ? `${sheetOverlay.width.toFixed(1)} × ${sheetOverlay.height.toFixed(1)} mm from Home${sheetOverlay.offBed ? " — off bed" : ""}`
+            : "-",
+        ],
         ["Queue", server.queue_size ?? "-"],
         ["Known Jobs", state.jobs.length],
       ];
@@ -1291,7 +1339,6 @@
       }
       applyInkWell(state.inkWell || state.config?.ink_well || {});
 
-      if (!state.jobs.length && data.jobs) renderJobs(data.jobs);
       renderServerInfo();
     }
 
@@ -1308,6 +1355,38 @@
     function setMarkerPosition(element, x, y) {
       element.style.left = `${(x / state.bed.width) * 100}%`;
       element.style.top = `${(1 - y / state.bed.height) * 100}%`;
+    }
+
+    function applySheetOverlay(home) {
+      const marker = $("sheetMarker");
+      const job = footprintJob();
+      const footprint = job?.plot_footprint;
+      if (!home || !footprint) {
+        marker.style.display = "none";
+        return null;
+      }
+      const x = Number(home.x_mm);
+      const y = Number(home.y_mm);
+      const width = Number(footprint.width_mm);
+      const height = Number(footprint.height_mm);
+      if (![x, y, width, height].every(Number.isFinite) || width <= 0 || height <= 0) {
+        marker.style.display = "none";
+        return null;
+      }
+      const offBed = x < 0 || y > state.bed.height || x + width > state.bed.width || y - height < 0;
+      marker.style.display = "block";
+      marker.style.left = `${(x / state.bed.width) * 100}%`;
+      marker.style.top = `${(1 - y / state.bed.height) * 100}%`;
+      marker.style.width = `${(width / state.bed.width) * 100}%`;
+      marker.style.height = `${(height / state.bed.height) * 100}%`;
+      marker.classList.toggle("warn", offBed);
+      marker.dataset.label = `${width.toFixed(1)}×${height.toFixed(1)} mm`;
+      marker.title = [
+        `Plot footprint from Home for ${job.id || "current job"}`,
+        `${width.toFixed(1)} × ${height.toFixed(1)} mm`,
+        offBed ? "Warning: this footprint extends outside the calibrated bed." : "Within calibrated bed.",
+      ].join("\n");
+      return { job, width, height, offBed };
     }
 
     async function moveToTarget(target) {

@@ -738,6 +738,27 @@ def active_running_job_unlocked() -> dict | None:
     return None
 
 
+def job_plot_footprint(job: dict) -> dict | None:
+    widths = []
+    heights = []
+    for layer in job.get("layers") or []:
+        metrics = layer.get("svg_metrics") or {}
+        try:
+            width = float(metrics.get("width_mm"))
+            height = float(metrics.get("height_mm"))
+        except (TypeError, ValueError):
+            continue
+        if math.isfinite(width) and math.isfinite(height) and width > 0 and height > 0:
+            widths.append(width)
+            heights.append(height)
+    if not widths or not heights:
+        return None
+    return {
+        "width_mm": round(max(widths), 4),
+        "height_mm": round(max(heights), 4),
+    }
+
+
 def require_hardware_idle() -> None:
     with jobs_lock:
         active = active_running_job_unlocked()
@@ -2568,6 +2589,7 @@ def list_jobs(
                     "dip_interval_s": job.get("dip_interval_s"),
                     "dip_count": job.get("dip_count", 0),
                     "dip_failure": job.get("dip_failure"),
+                    "plot_footprint": job_plot_footprint(job),
                     "rerun_of": job.get("rerun_of"),
                     "log_path": job.get("log_path"),
                 }
@@ -2961,6 +2983,7 @@ def plotter_state(
                 "current_layer": job.get("current_layer"),
                 "current_layer_name": job.get("current_layer_name"),
                 "operator_message": job.get("operator_message"),
+                "plot_footprint": job_plot_footprint(job),
             }
             for job in sorted(jobs.values(), key=lambda item: item.get("created_at") or 0, reverse=True)[:5]
         ]
