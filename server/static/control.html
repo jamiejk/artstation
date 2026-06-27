@@ -116,11 +116,21 @@
 
     button:hover { background: #eef4ff; border-color: #84adff; }
     button:active, button.active { background: #d1fadf; border-color: #12b76a; }
+    button:disabled { opacity: 0.72; cursor: not-allowed; }
     button.danger:hover { background: #fee4e2; border-color: #f97066; }
     button.primary { background: var(--accent); border-color: var(--accent); color: white; }
     button.primary:hover { background: #115e59; }
     button.calibrate { background: #fff7ed; border-color: #fdba74; }
     button.calibrate:hover { background: #ffedd5; border-color: #fb923c; }
+    button.busy,
+    button.primary.busy,
+    button.danger.busy,
+    button.calibrate.busy {
+      background: #d1fadf;
+      border-color: #12b76a;
+      color: #065f46;
+      cursor: wait;
+    }
 
     .jog {
       display: grid;
@@ -241,6 +251,17 @@
       display: grid;
       place-items: center;
       border-radius: 50%;
+    }
+
+    .well-marker {
+      position: absolute;
+      display: none;
+      transform: translate(-50%, -50%);
+      border: 2px dashed var(--danger);
+      border-radius: 50%;
+      background: rgba(180, 35, 24, 0.08);
+      pointer-events: none;
+      z-index: 1;
     }
 
     .home-marker {
@@ -578,7 +599,7 @@
           <div class="form-row">
             <label for="speed">Manual XY — arrows and blue-marker moves</label>
             <output id="speedValue">90 mm/s</output>
-            <input id="speed" type="range" min="20" max="280" step="5" value="90">
+            <input id="speed" type="range" min="20" max="200" step="5" value="90">
           </div>
           <div class="pen-grid">
             <div class="pen-control">
@@ -622,6 +643,50 @@
       </section>
 
       <section>
+        <div class="section-head">Ink Well</div>
+        <div class="section-body">
+          <div class="pen-grid">
+            <div class="pen-control">
+              <label for="wellRadius">Keep-out radius (mm)</label>
+              <span></span><input id="wellRadius" type="number" min="1" max="250" step="1" value="25"><span></span>
+            </div>
+            <div class="pen-control">
+              <label for="wellClearance">Clearance servo</label>
+              <span></span><input id="wellClearance" type="number" min="0" max="100" step="1" value="80"><span></span>
+            </div>
+            <div class="pen-control">
+              <label for="wellDip">Dip servo</label>
+              <span></span><input id="wellDip" type="number" min="0" max="100" step="1" value="20"><span></span>
+            </div>
+            <div class="pen-control">
+              <label for="wellDwell">Ink dwell (ms)</label>
+              <span></span><input id="wellDwell" type="number" min="0" max="30000" step="100" value="1000"><span></span>
+            </div>
+            <div class="pen-control">
+              <label for="wellDipCircleCount">Dip circles</label>
+              <span></span><input id="wellDipCircleCount" type="number" min="0" max="10" step="1" value="3"><span></span>
+            </div>
+            <div class="pen-control">
+              <label for="wellDipCircleDiameter">Circle diameter (mm)</label>
+              <span></span><input id="wellDipCircleDiameter" type="number" min="0" max="50" step="1" value="10"><span></span>
+            </div>
+            <div class="pen-control">
+              <label for="wellDripDwell">Drip dwell (ms)</label>
+              <span></span><input id="wellDripDwell" type="number" min="0" max="30000" step="100" value="0"><span></span>
+            </div>
+          </div>
+          <div class="toolbar" style="margin-top: 10px">
+            <button id="wellSetCentre">Set Centre Here</button>
+            <button id="wellSave">Save Setup</button>
+            <button id="wellTest" class="calibrate">Run Test Cycle</button>
+            <button id="wellConfirmTest">Confirm Test Passed</button>
+            <button id="wellInstalled">Mark Installed</button>
+          </div>
+          <div class="spec-note" id="wellStatus">Not configured.</div>
+        </div>
+      </section>
+
+      <section>
         <div class="section-head">State</div>
         <div class="section-body">
           <dl id="stateList"></dl>
@@ -660,6 +725,7 @@
             <div class="bed-label left" style="bottom: 75%">686</div>
             <div class="bed-label left" style="bottom: 100%">914 mm</div>
             <div class="target-marker" id="targetMarker"></div>
+            <div class="well-marker" id="wellMarker" title="Ink well keep-out zone"></div>
             <div class="head-marker" id="headMarker">@</div>
           </div>
         </div>
@@ -671,6 +737,27 @@
           <button id="clearJobs">Clear Stopped</button>
         </div>
         <div class="section-body">
+          <form id="uploadForm" style="margin-bottom:14px">
+            <div class="form-row">
+              <label for="plotFiles">SVG layers (ordered)</label>
+              <input id="plotFiles" type="file" accept=".svg,image/svg+xml" multiple required>
+            </div>
+            <div class="form-row">
+              <label for="layerNames">Layer names, comma-separated</label>
+              <input id="layerNames" type="text" placeholder="Blue, Black">
+            </div>
+            <div class="form-row">
+              <label for="autoDip">Automatic ink dipping</label>
+              <input id="autoDip" type="checkbox">
+            </div>
+            <div class="form-row">
+              <label for="dipInterval">Active plotting interval (s)</label>
+              <input id="dipInterval" type="number" min="1" max="86400" step="1" value="60">
+            </div>
+            <div class="toolbar" style="margin-top:10px">
+              <button id="uploadSubmit" class="primary" type="submit">Prepare &amp; Queue</button>
+            </div>
+          </form>
           <div class="job-groups">
             <div class="job-group">
               <div class="job-group-title">Active</div>
@@ -712,16 +799,37 @@
       dragTarget: null,
       currentPosition: { x: 0, y: 0 },
       positionKnown: false,
+      inkWell: null,
     };
 
     const $ = (id) => document.getElementById(id);
     const clamp = (value, min, max) => Math.max(min, Math.min(max, value));
-    const ACTIVE_STATUSES = new Set(["running", "paused", "queued_for_resume"]);
+    const inputNumber = (id, fallback) => {
+      const value = $(id).value;
+      return Number(value === "" ? fallback : value);
+    };
+    const ACTIVE_STATUSES = new Set(["running", "paused", "queued_for_resume", "dipping", "dip_failed"]);
     const QUEUED_STATUSES = new Set(["queued", "queued_for_operator", "waiting_for_operator"]);
     const HISTORY_STATUSES = new Set(["done", "cancelled", "interrupted", "failed"]);
 
     function setMessage(text) {
       $("message").textContent = text;
+    }
+
+    async function withButtonFeedback(buttonOrId, busyText, action) {
+      const button = typeof buttonOrId === "string" ? $(buttonOrId) : buttonOrId;
+      const originalText = button.textContent;
+      button.disabled = true;
+      button.classList.add("busy");
+      button.textContent = busyText;
+      setMessage(busyText);
+      try {
+        return await action();
+      } finally {
+        button.textContent = originalText;
+        button.classList.remove("busy");
+        button.disabled = false;
+      }
     }
 
     function escapeHtml(value) {
@@ -745,26 +853,76 @@
     function penPayload(position) {
       return {
         position,
-        pen_pos_up: clamp(Number($("penUpValue").value || 65), 0, 100),
-        pen_pos_down: clamp(Number($("penDownValue").value || 35), 0, 100),
+        pen_pos_up: clamp(inputNumber("penUpValue", 65), 0, 100),
+        pen_pos_down: clamp(inputNumber("penDownValue", 35), 0, 100),
       };
     }
 
     function penSettingsPayload() {
       return {
-        pen_pos_up: clamp(Number($("penUpValue").value || 65), 0, 100),
-        pen_pos_down: clamp(Number($("penDownValue").value || 35), 0, 100),
+        pen_pos_up: clamp(inputNumber("penUpValue", 65), 0, 100),
+        pen_pos_down: clamp(inputNumber("penDownValue", 35), 0, 100),
       };
     }
 
     function plotSettingsPayload() {
       return {
-        speed_pendown: clamp(Number($("plotDownSpeed").value || 15), 1, 100),
-        speed_penup: clamp(Number($("plotUpSpeed").value || 40), 1, 100),
-        pen_delay_down: clamp(Number($("penDelayDown").value || 0), -500, 500),
-        pen_delay_up: clamp(Number($("penDelayUp").value || 0), -500, 500),
-        pen_rate_raise: clamp(Number($("penRateRaise").value || 75), 1, 100),
+        speed_pendown: clamp(inputNumber("plotDownSpeed", 15), 1, 100),
+        speed_penup: clamp(inputNumber("plotUpSpeed", 40), 1, 100),
+        pen_delay_down: clamp(inputNumber("penDelayDown", 0), -500, 500),
+        pen_delay_up: clamp(inputNumber("penDelayUp", 0), -500, 500),
+        pen_rate_raise: clamp(inputNumber("penRateRaise", 75), 1, 100),
       };
+    }
+
+    function inkWellPayload() {
+      return {
+        radius_mm: clamp(inputNumber("wellRadius", 25), 1, 250),
+        clearance_pos: clamp(inputNumber("wellClearance", 80), 0, 100),
+        dip_pos: clamp(inputNumber("wellDip", 20), 0, 100),
+        dwell_ms: clamp(inputNumber("wellDwell", 1000), 0, 30000),
+        dip_circle_count: clamp(inputNumber("wellDipCircleCount", 3), 0, 10),
+        dip_circle_diameter_mm: clamp(inputNumber("wellDipCircleDiameter", 10), 0, 50),
+        drip_dwell_ms: clamp(inputNumber("wellDripDwell", 0), 0, 30000),
+      };
+    }
+
+    function applyInkWell(well) {
+      state.inkWell = well || {};
+      const syncInput = (id, value) => {
+        if (value == null || document.activeElement === $(id)) return;
+        $(id).value = String(value);
+      };
+      syncInput("wellRadius", well?.radius_mm);
+      syncInput("wellClearance", well?.clearance_pos);
+      syncInput("wellDip", well?.dip_pos);
+      syncInput("wellDwell", well?.dwell_ms);
+      syncInput("wellDipCircleCount", well?.dip_circle_count);
+      syncInput("wellDipCircleDiameter", well?.dip_circle_diameter_mm);
+      syncInput("wellDripDwell", well?.drip_dwell_ms);
+      const centre = well?.centre;
+      const centreText = centre ? `${Number(centre.x_mm).toFixed(1)}, ${Number(centre.y_mm).toFixed(1)} mm` : "not set";
+      const circleText = `${Number(well?.dip_circle_count ?? 0)}×${Number(well?.dip_circle_diameter_mm ?? 0).toFixed(1)} mm circles`;
+      $("wellStatus").textContent = `Centre ${centreText} · pickup ${circleText} · test ${well?.test_passed ? "passed" : "required"} · ${well?.installed ? "installed" : "not installed"}`;
+      $("wellInstalled").textContent = well?.installed ? "Mark Removed" : "Mark Installed";
+      const marker = $("wellMarker");
+      if (centre && Number(well.radius_mm) > 0) {
+        const diameterX = (Number(well.radius_mm) * 2 / state.bed.width) * 100;
+        const diameterY = (Number(well.radius_mm) * 2 / state.bed.height) * 100;
+        marker.style.display = "block";
+        marker.style.width = `${diameterX}%`;
+        marker.style.height = `${diameterY}%`;
+        setMarkerPosition(marker, Number(centre.x_mm), Number(centre.y_mm));
+      } else {
+        marker.style.display = "none";
+      }
+    }
+
+    async function saveInkWell(extra = {}) {
+      const result = await post("/plotter/ink_well", Object.assign(inkWellPayload(), extra));
+      applyInkWell(result.ink_well);
+      if (state.config) state.config.ink_well = result.ink_well;
+      return result;
     }
 
     function motionSpec() {
@@ -841,24 +999,28 @@
     function adjustPlotSpeed(inputId, delta) {
       const input = $(inputId);
       input.value = String(clamp(Number(input.value || 0) + delta, 1, 100));
+      setMessage("Saving plot speed settings…");
       savePlotSettings().catch((error) => setMessage(error.message));
     }
 
     function adjustPenDelay(delta) {
       const input = $("penDelayDown");
       input.value = String(clamp(Number(input.value || 0) + delta, -500, 500));
+      setMessage("Saving pen-down delay…");
       savePlotSettings().catch((error) => setMessage(error.message));
     }
 
     function adjustPenUpDelay(delta) {
       const input = $("penDelayUp");
       input.value = String(clamp(Number(input.value || 0) + delta, -500, 500));
+      setMessage("Saving pen-up delay…");
       savePlotSettings().catch((error) => setMessage(error.message));
     }
 
     function adjustPenRaiseRate(delta) {
       const input = $("penRateRaise");
       input.value = String(clamp(Number(input.value || 75) + delta, 1, 100));
+      setMessage("Saving pen raise rate…");
       savePlotSettings().catch((error) => setMessage(error.message));
     }
 
@@ -889,6 +1051,7 @@
     function adjustPenValue(inputId, delta, position) {
       const input = $(inputId);
       input.value = String(clamp(Number(input.value || 0) + delta, 0, 100));
+      setMessage(`Moving pen ${position}…`);
       sendPen(position).catch((error) => setMessage(error.message));
     }
 
@@ -907,6 +1070,7 @@
           $("penDelayUp").value = localStorage.getItem("plotPenDelayUp") ?? config.pen_delay_up ?? $("penDelayUp").value;
           $("penRateRaise").value = localStorage.getItem("plotPenRateRaise") ?? config.pen_rate_raise ?? $("penRateRaise").value;
           $("speed").value = localStorage.getItem("manualMoveSpeed") || $("speed").value;
+          applyInkWell(config.ink_well || {});
           localStorage.setItem("plotterToken", state.token);
         } else if (!state.token) {
           state.token = prompt("Plotter token") || "";
@@ -927,6 +1091,7 @@
       $("penRateRaise").value = localStorage.getItem("plotPenRateRaise") ?? $("penRateRaise").value;
       $("speed").value = localStorage.getItem("manualMoveSpeed") || $("speed").value;
       renderSpeedEstimates();
+      applyInkWell(state.config?.ink_well || state.inkWell || {});
       renderServerInfo();
     }
 
@@ -945,6 +1110,38 @@
       const headers = {};
       if (!token) delete headers["X-Plotter-Token"];
       return api(path, { method: "POST", body: JSON.stringify(body), headers });
+    }
+
+    async function uploadPlot(event) {
+      event.preventDefault();
+      const files = Array.from($("plotFiles").files || []);
+      if (!files.length) throw new Error("Select at least one SVG layer");
+      await Promise.all([savePlotSettings(), savePenSettings()]);
+      const plot = plotSettingsPayload();
+      const pen = penSettingsPayload();
+      const form = new FormData();
+      files.forEach((file) => form.append("files", file));
+      if ($("layerNames").value.trim()) form.append("layer_names", $("layerNames").value.trim());
+      Object.entries(Object.assign({}, plot, pen)).forEach(([key, value]) => form.append(key, String(value)));
+      form.append("auto_dip", $("autoDip").checked ? "true" : "false");
+      if ($("autoDip").checked) form.append("dip_interval_s", String(Number($("dipInterval").value || 60)));
+
+      const response = await fetch("/plot/layers", {
+        method: "POST",
+        headers: state.token ? { "X-Plotter-Token": state.token } : {},
+        body: form,
+      });
+      const text = await response.text();
+      const data = text ? JSON.parse(text) : {};
+      if (!response.ok) throw new Error(data.detail ? JSON.stringify(data.detail) : text);
+      const estimates = data.dip_estimates || [];
+      const estimateText = estimates.length
+        ? ` Estimated dips: ${estimates.reduce((sum, item) => sum + Number(item.estimated_dip_count_per_layer || 0), 0)}; longest stroke ${Math.max(...estimates.map((item) => Number(item.longest_stroke_time_s || 0))).toFixed(1)}s.`
+        : "";
+      setMessage(`Queued ${data.job_id}.${estimateText}`);
+      $("uploadForm").reset();
+      $("dipInterval").value = "60";
+      await refresh();
     }
 
     function statusClass(hardware) {
@@ -985,12 +1182,20 @@
       const speed = `XY down ${formatXySpeed(job.speed_pendown)} / up ${formatXySpeed(job.speed_penup)}`;
       const pen = `pen down ${job.pen_pos_down ?? "-"} / up ${job.pen_pos_up ?? "-"} / delays ${job.pen_delay_down ?? 0},${job.pen_delay_up ?? 0} ms / raise ${job.pen_rate_raise ?? 75}%`;
       const message = job.operator_message ? ` · ${job.operator_message}` : "";
+      const dip = job.auto_dip_enabled ? ` · auto dip ${job.dip_interval_s}s (${job.dip_count || 0} completed)` : "";
+      const recovery = job.status === "dip_failed"
+        ? `<div class="toolbar" style="margin-top:8px">
+             <button data-dip-action="retry" data-job-id="${escapeHtml(job.id)}">Retry Dip</button>
+             <button data-dip-action="skip" data-job-id="${escapeHtml(job.id)}">Skip Dip &amp; Resume</button>
+           </div>`
+        : "";
       return `
         <div class="job-card">
           <div class="job-id mono">${escapeHtml(job.id || "-")}</div>
           <div class="status-pill ${escapeHtml(status)}">${escapeHtml(status)}</div>
           <div class="job-layer">${escapeHtml(layer)}</div>
-          <div class="job-meta">Created ${escapeHtml(created)} · ${escapeHtml(job.layer_count || "-")} layer(s) · ${escapeHtml(speed)} · ${escapeHtml(pen)}${escapeHtml(message)}</div>
+          <div class="job-meta">Created ${escapeHtml(created)} · ${escapeHtml(job.layer_count || "-")} layer(s) · ${escapeHtml(speed)} · ${escapeHtml(pen)}${escapeHtml(dip)}${escapeHtml(message)}</div>
+          ${recovery}
         </div>
       `;
     }
@@ -1084,6 +1289,7 @@
       } else {
         $("homeMarker").style.display = "none";
       }
+      applyInkWell(state.inkWell || state.config?.ink_well || {});
 
       if (!state.jobs.length && data.jobs) renderJobs(data.jobs);
       renderServerInfo();
@@ -1251,14 +1457,30 @@
         renderSpeedEstimates();
       });
 
-      $("penUp").addEventListener("click", () => sendPen("up").catch((error) => setMessage(error.message)));
-      $("penDown").addEventListener("click", () => sendPen("down").catch((error) => setMessage(error.message)));
+      $("penUp").addEventListener("click", () => {
+        withButtonFeedback("penUp", "Raising pen…", () => sendPen("up"))
+          .catch((error) => setMessage(error.message));
+      });
+      $("penDown").addEventListener("click", () => {
+        withButtonFeedback("penDown", "Lowering pen…", () => sendPen("down"))
+          .catch((error) => setMessage(error.message));
+      });
       $("penUpMinus").addEventListener("click", () => adjustPenValue("penUpValue", -5, "up"));
       $("penUpPlus").addEventListener("click", () => adjustPenValue("penUpValue", 5, "up"));
       $("penDownMinus").addEventListener("click", () => adjustPenValue("penDownValue", -5, "down"));
       $("penDownPlus").addEventListener("click", () => adjustPenValue("penDownValue", 5, "down"));
-      $("penUpValue").addEventListener("change", () => savePenSettings().catch((error) => setMessage(error.message)));
-      $("penDownValue").addEventListener("change", () => savePenSettings().catch((error) => setMessage(error.message)));
+      $("penUpValue").addEventListener("change", () => {
+        setMessage("Saving pen-up setting…");
+        savePenSettings()
+          .then(() => setMessage("Pen-up setting saved."))
+          .catch((error) => setMessage(error.message));
+      });
+      $("penDownValue").addEventListener("change", () => {
+        setMessage("Saving pen-down setting…");
+        savePenSettings()
+          .then(() => setMessage("Pen-down setting saved."))
+          .catch((error) => setMessage(error.message));
+      });
       $("plotDownMinus").addEventListener("click", () => adjustPlotSpeed("plotDownSpeed", -5));
       $("plotDownPlus").addEventListener("click", () => adjustPlotSpeed("plotDownSpeed", 5));
       $("plotUpMinus").addEventListener("click", () => adjustPlotSpeed("plotUpSpeed", -5));
@@ -1271,35 +1493,69 @@
       $("penRateRaisePlus").addEventListener("click", () => adjustPenRaiseRate(5));
       $("plotDownSpeed").addEventListener("input", renderSpeedEstimates);
       $("plotUpSpeed").addEventListener("input", renderSpeedEstimates);
-      $("plotDownSpeed").addEventListener("change", () => savePlotSettings().catch((error) => setMessage(error.message)));
-      $("plotUpSpeed").addEventListener("change", () => savePlotSettings().catch((error) => setMessage(error.message)));
-      $("penDelayDown").addEventListener("change", () => savePlotSettings().catch((error) => setMessage(error.message)));
-      $("penDelayUp").addEventListener("change", () => savePlotSettings().catch((error) => setMessage(error.message)));
-      $("penRateRaise").addEventListener("change", () => savePlotSettings().catch((error) => setMessage(error.message)));
-      $("setHome").addEventListener("click", () => post("/plotter/home/set").then(() => refresh()).catch((error) => setMessage(error.message)));
+      $("plotDownSpeed").addEventListener("change", () => {
+        setMessage("Saving pen-down plot speed…");
+        savePlotSettings().catch((error) => setMessage(error.message));
+      });
+      $("plotUpSpeed").addEventListener("change", () => {
+        setMessage("Saving pen-up travel speed…");
+        savePlotSettings().catch((error) => setMessage(error.message));
+      });
+      $("penDelayDown").addEventListener("change", () => {
+        setMessage("Saving pen-down delay…");
+        savePlotSettings().catch((error) => setMessage(error.message));
+      });
+      $("penDelayUp").addEventListener("change", () => {
+        setMessage("Saving pen-up delay…");
+        savePlotSettings().catch((error) => setMessage(error.message));
+      });
+      $("penRateRaise").addEventListener("change", () => {
+        setMessage("Saving pen raise rate…");
+        savePlotSettings().catch((error) => setMessage(error.message));
+      });
+      $("setHome").addEventListener("click", () => {
+        withButtonFeedback("setHome", "Setting home…", () => post("/plotter/home/set").then(() => refresh()))
+          .catch((error) => setMessage(error.message));
+      });
       $("calibrateTopLeft").addEventListener("click", () => {
-        post("/plotter/position/set", { x_mm: 0, y_mm: state.bed.height, reset_home: true })
+        withButtonFeedback(
+          "calibrateTopLeft",
+          "Calibrating top-left…",
+          () => post("/plotter/position/set", { x_mm: 0, y_mm: state.bed.height, reset_home: true })
+        )
           .then(() => {
             setMessage("Calibrated at top-left.");
             refresh();
           })
           .catch((error) => setMessage(error.message));
       });
-      $("returnHome").addEventListener("click", () => post("/plotter/home/return").then(() => refresh()).catch((error) => setMessage(error.message)));
-      $("enableMotors").addEventListener("click", () => post("/plotter/motors", { enabled: true }).then(() => refresh()).catch((error) => setMessage(error.message)));
-      $("disableMotors").addEventListener("click", () => post("/plotter/motors", { enabled: false }).then(() => refresh()).catch((error) => setMessage(error.message)));
+      $("returnHome").addEventListener("click", () => {
+        withButtonFeedback("returnHome", "Returning home…", () => post("/plotter/home/return").then(() => refresh()))
+          .catch((error) => setMessage(error.message));
+      });
+      $("enableMotors").addEventListener("click", () => {
+        withButtonFeedback("enableMotors", "Enabling motors…", () => post("/plotter/motors", { enabled: true }).then(() => refresh()))
+          .catch((error) => setMessage(error.message));
+      });
+      $("disableMotors").addEventListener("click", () => {
+        withButtonFeedback("disableMotors", "Disabling motors…", () => post("/plotter/motors", { enabled: false }).then(() => refresh()))
+          .catch((error) => setMessage(error.message));
+      });
       $("operatorContinue").addEventListener("click", () => {
         const prompt = state.lastState?.server?.operator_prompt || {};
         if (prompt.active) {
-          post("/operator/continue", {}, false)
+          withButtonFeedback("operatorContinue", "Continuing…", () => post("/operator/continue", {}, false))
             .then(() => refresh())
             .catch((error) => setMessage(error.message));
           return;
         }
         if (state.pausedJob) {
           const jobId = state.pausedJob.id;
-          Promise.all([savePlotSettings(), savePenSettings()])
-            .then(() => post(`/jobs/${jobId}/resume`))
+          withButtonFeedback(
+            "operatorContinue",
+            "Resuming job…",
+            () => Promise.all([savePlotSettings(), savePenSettings()]).then(() => post(`/jobs/${jobId}/resume`))
+          )
             .then(() => {
               setMessage(`Resuming ${jobId} with current Speeds settings`);
               refresh();
@@ -1312,12 +1568,68 @@
       $("pauseActive").addEventListener("click", () => {
         const runningJob = state.jobs.find((job) => job.status === "running");
         if (!runningJob) { setMessage("No running job."); return; }
-        post(`/jobs/${runningJob.id}/pause`)
+        withButtonFeedback("pauseActive", "Requesting pause…", () => post(`/jobs/${runningJob.id}/pause`))
           .then(() => setMessage(`Pause requested for ${runningJob.id}; AxiDraw will stop at a safe command boundary`))
           .then(() => refresh())
           .catch((error) => setMessage(error.message));
       });
-      $("clearJobs").addEventListener("click", () => post("/jobs/clear", { keep_files: true }).then(() => refresh()).catch((error) => setMessage(error.message)));
+      $("clearJobs").addEventListener("click", () => {
+        withButtonFeedback("clearJobs", "Clearing jobs…", () => post("/jobs/clear", { keep_files: true }).then(() => refresh()))
+          .catch((error) => setMessage(error.message));
+      });
+      $("uploadForm").addEventListener("submit", (event) => {
+        withButtonFeedback("uploadSubmit", "Preparing plot…", () => uploadPlot(event))
+          .catch((error) => setMessage(error.message));
+      });
+      $("wellSetCentre").addEventListener("click", () => {
+        withButtonFeedback("wellSetCentre", "Saving centre…", () => saveInkWell({ centre_from_current: true }))
+          .then(() => setMessage("Ink well centre saved at the current plot-head position; test cycle required."))
+          .catch((error) => setMessage(error.message));
+      });
+      $("wellSave").addEventListener("click", () => {
+        withButtonFeedback("wellSave", "Saving setup…", () => saveInkWell())
+          .then(() => setMessage("Ink well setup saved; run a test cycle before installation."))
+          .catch((error) => setMessage(error.message));
+      });
+      $("wellTest").addEventListener("click", () => {
+        withButtonFeedback("wellTest", "Starting test cycle…", () => saveInkWell().then(() => post("/plotter/ink_well/test")))
+          .then((result) => {
+            applyInkWell(result.ink_well);
+            setMessage(result.message);
+            refresh();
+          })
+          .catch((error) => setMessage(error.message));
+      });
+      $("wellConfirmTest").addEventListener("click", () => {
+        withButtonFeedback("wellConfirmTest", "Confirming test…", () => post("/plotter/ink_well/confirm_test"))
+          .then((result) => {
+            applyInkWell(result.ink_well);
+            setMessage(result.message);
+          })
+          .catch((error) => setMessage(error.message));
+      });
+      $("wellInstalled").addEventListener("click", () => {
+        withButtonFeedback("wellInstalled", "Updating install state…", () => post("/plotter/ink_well", { installed: !Boolean(state.inkWell?.installed) }))
+          .then((result) => {
+            applyInkWell(result.ink_well);
+            setMessage(result.ink_well.installed ? "Ink well marked installed; keep-out is active for every upload." : "Ink well marked removed.");
+          })
+          .catch((error) => setMessage(error.message));
+      });
+      document.addEventListener("click", (event) => {
+        const button = event.target.closest("[data-dip-action]");
+        if (!button) return;
+        withButtonFeedback(
+          button,
+          `Dip ${button.dataset.dipAction}…`,
+          () => post(`/jobs/${button.dataset.jobId}/dip_recovery`, { action: button.dataset.dipAction })
+        )
+          .then(() => {
+            setMessage(`Dip recovery requested: ${button.dataset.dipAction}`);
+            refresh();
+          })
+          .catch((error) => setMessage(error.message));
+      });
     }
 
     async function main() {

@@ -1,5 +1,6 @@
 import importlib
 import os
+from pathlib import Path
 import tempfile
 import unittest
 from unittest import mock
@@ -12,6 +13,7 @@ os.environ["HOME"] = _home.name
 os.environ["PLOTTER_TOKEN"] = "test-token"
 os.environ["PLOTTER_DISABLE_WORKER"] = "1"
 server = importlib.import_module("server.server")
+ink_dip = importlib.import_module("server.ink_dip")
 
 
 class SvgValidationTests(unittest.TestCase):
@@ -33,6 +35,9 @@ class SvgValidationTests(unittest.TestCase):
 
 
 class MotionSafetyTests(unittest.TestCase):
+    def setUp(self):
+        server.invalidate_motor_resolution_cache()
+
     def test_accepts_bed_edges(self):
         self.assertEqual(
             server.validate_bed_target(server.BED_WIDTH_MM, server.BED_HEIGHT_MM),
@@ -56,6 +61,37 @@ class MotionSafetyTests(unittest.TestCase):
         with mock.patch.object(server, "serial_query", side_effect=replies) as query:
             server.require_enabled_high_resolution_motors(object())
         self.assertEqual(query.call_count, 5)
+
+    def test_motor_state_cache_skips_repeated_resolution_reads(self):
+        replies = [
+            ("PI,0", "OK"),
+            ("PI,0", "OK"),
+            ("PI,1", "OK"),
+            ("PI,1", "OK"),
+            ("PI,1", "OK"),
+        ]
+        with mock.patch.object(server, "serial_query", side_effect=replies) as query:
+            server.require_cached_high_resolution_motors(object())
+            server.require_cached_high_resolution_motors(object())
+        self.assertEqual(query.call_count, 5)
+
+    def test_read_hardware_state_returns_cache_without_serial_access(self):
+        with server.hardware_state_lock:
+            server.cached_hardware_state.clear()
+            server.cached_hardware_state.update(
+                {
+                    "busy": False,
+                    "connected": True,
+                    "port": "/dev/test",
+                    "telemetry_stale": False,
+                    "telemetry_updated_at": server.now(),
+                }
+            )
+        with mock.patch.object(server.serial, "Serial", side_effect=AssertionError("serial access")):
+            state = server.read_hardware_state()
+
+        self.assertTrue(state["connected"])
+        self.assertEqual(state["port"], "/dev/test")
 
 
 class PlotSettingsTests(unittest.TestCase):
@@ -193,6 +229,392 @@ class OperatorPromptTests(unittest.TestCase):
 
         self.assertEqual(captured_prompt["action"], "start")
         server.jobs.pop("new-job", None)
+
+
+class InkDipGeometryTests(unittest.TestCase):
+    def test_parses_plob_points_as_millimetres(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "digest.svg"
+            path.write_text(
+                '<svg xmlns="http://www.w3.org/2000/svg">'
+                '<g><polyline points="0,0 1,0 1,2"/></g></svg>',
+                encoding="utf-8",
+            )
+
+            self.assertEqual(
+                ink_dip.parse_plob_polylines(path),
+                [[(0.0, 0.0), (25.4, 0.0), (25.4, 50.8)]],
+            )
+
+    def test_schedules_dips_only_after_complete_strokes(self):
+        strokes = [
+            [(0.0, 0.0), (10.0, 0.0)],
+            [(10.0, 0.0), (20.0, 0.0)],
+            [(20.0, 0.0), (30.0, 0.0)],
+        ]
+        estimate = ink_dip.estimate_checkpoint_schedule(
+            strokes,
+            speed_pendown=10,
+            interval_s=0.75,
+        )
+
+        self.assertEqual(estimate["checkpoint_after_strokes"], [2])
+        self.assertEqual(estimate["estimated_dip_count_per_layer"], 2)
+
+    def test_does_not_schedule_redundant_dip_after_final_stroke(self):
+        strokes = [[(0.0, 0.0), (100.0, 0.0)]]
+        estimate = ink_dip.estimate_checkpoint_schedule(
+            strokes,
+            speed_pendown=10,
+            interval_s=0.1,
+        )
+
+        self.assertEqual(estimate["checkpoint_after_strokes"], [])
+        self.assertEqual(estimate["estimated_dip_count_per_layer"], 1)
+        self.assertGreater(estimate["longest_stroke_time_s"], estimate["interval_s"])
+
+    def test_detects_pen_down_keepout_collision(self):
+        collision = ink_dip.find_keepout_collision(
+            [[(0.0, 0.0), (100.0, 0.0)]],
+            origin_mm=(10.0, 10.0),
+            centre_mm=(60.0, 12.0),
+            radius_mm=5.0,
+        )
+
+        self.assertEqual(collision["motion"], "pen_down")
+        self.assertEqual(collision["stroke"], 1)
+
+    def test_detects_pen_up_travel_and_return_home_collisions(self):
+        travel_collision = ink_dip.find_keepout_collision(
+            [[(100.0, 0.0), (110.0, 0.0)]],
+            origin_mm=(0.0, 0.0),
+            centre_mm=(50.0, 0.0),
+            radius_mm=2.0,
+        )
+        return_collision = ink_dip.find_keepout_collision(
+            [[(100.0, 0.0), (110.0, 0.0)]],
+            origin_mm=(0.0, 0.0),
+            centre_mm=(55.0, 0.0),
+            radius_mm=2.0,
+        )
+
+        self.assertEqual(travel_collision["motion"], "pen_up")
+        self.assertEqual(return_collision["motion"], "pen_up")
+
+    def test_accepts_geometry_clear_of_keepout(self):
+        collision = ink_dip.find_keepout_collision(
+            [[(0.0, 0.0), (100.0, 0.0)]],
+            origin_mm=(0.0, 0.0),
+            centre_mm=(50.0, 20.0),
+            radius_mm=5.0,
+        )
+        self.assertIsNone(collision)
+
+    def test_writes_programmatic_pauses_only_at_checkpoints(self):
+        with tempfile.TemporaryDirectory() as directory:
+            source = Path(directory) / "source.svg"
+            target = Path(directory) / "prepared.svg"
+            source.write_text(
+                '<svg xmlns="http://www.w3.org/2000/svg" '
+                'xmlns:inkscape="http://www.inkscape.org/namespaces/inkscape">'
+                '<g inkscape:groupmode="layer" inkscape:label="original">'
+                '<polyline id="1" points="0,0 1,0"/>'
+                '<polyline id="2" points="1,0 2,0"/>'
+                '<polyline id="3" points="2,0 3,0"/>'
+                '</g><plotdata application="axidraw" plob_version="1"/></svg>',
+                encoding="utf-8",
+            )
+
+            group_count = ink_dip.write_checkpoint_digest(source, target, [1, 2])
+            root = ink_dip.ET.parse(target).getroot()
+            groups = [item for item in root if item.tag.endswith("g")]
+            labels = [
+                group.attrib.get(f"{{{ink_dip.INKSCAPE_NAMESPACE}}}label")
+                for group in groups
+            ]
+
+            self.assertEqual(group_count, 3)
+            self.assertEqual(labels, ["original", "!ink-dip-2", "!ink-dip-3"])
+            self.assertEqual(
+                [len([child for child in group if child.tag.endswith("polyline")]) for group in groups],
+                [1, 1, 1],
+            )
+
+    def test_rejects_checkpoint_after_final_stroke(self):
+        with tempfile.TemporaryDirectory() as directory:
+            source = Path(directory) / "source.svg"
+            source.write_text(
+                '<svg xmlns="http://www.w3.org/2000/svg"><g>'
+                '<polyline points="0,0 1,0"/></g></svg>',
+                encoding="utf-8",
+            )
+            with self.assertRaisesRegex(ValueError, "before the final stroke"):
+                ink_dip.write_checkpoint_digest(source, Path(directory) / "target.svg", [1])
+
+    def test_rejects_existing_programmatic_pause_layers(self):
+        with tempfile.TemporaryDirectory() as directory:
+            source = Path(directory) / "source.svg"
+            source.write_text(
+                '<svg xmlns="http://www.w3.org/2000/svg" '
+                'xmlns:inkscape="http://www.inkscape.org/namespaces/inkscape">'
+                '<g inkscape:label="!operator-pause"><polyline points="0,0 1,0"/></g>'
+                '</svg>',
+                encoding="utf-8",
+            )
+            with self.assertRaisesRegex(ValueError, "cannot be combined"):
+                ink_dip.write_checkpoint_digest(source, Path(directory) / "target.svg", [])
+
+
+class InkWellSettingsTests(unittest.TestCase):
+    def setUp(self):
+        with server.ink_well_settings_lock:
+            server.ink_well_settings.clear()
+            server.ink_well_settings.update(
+                {
+                    "state_version": 1,
+                    "installed": False,
+                    "centre": None,
+                    "radius_mm": None,
+                    "clearance_pos": None,
+                    "dip_pos": None,
+                    "dwell_ms": 1000,
+                    "drip_dwell_ms": 0,
+                    "dip_circle_count": 3,
+                    "dip_circle_diameter_mm": 10.0,
+                    "test_passed": False,
+                    "tested_at": None,
+                }
+            )
+
+    def test_installed_well_requires_complete_tested_calibration(self):
+        settings = {
+            "installed": True,
+            "centre": {"x_mm": 10, "y_mm": 20},
+            "radius_mm": 15,
+            "clearance_pos": 80,
+            "dip_pos": 20,
+            "dwell_ms": 1000,
+            "drip_dwell_ms": 0,
+            "dip_circle_count": 3,
+            "dip_circle_diameter_mm": 10,
+            "test_passed": False,
+        }
+        with self.assertRaisesRegex(ValueError, "test cycle must pass"):
+            server.validate_ink_well_settings(settings, require_ready=True)
+
+        settings["test_passed"] = True
+        self.assertEqual(
+            server.validate_ink_well_settings(settings, require_ready=True)["radius_mm"],
+            15.0,
+        )
+
+    def test_plot_snapshot_is_independent_from_later_calibration_changes(self):
+        settings = {
+            "installed": True,
+            "centre": {"x_mm": 10, "y_mm": 20},
+            "radius_mm": 15,
+            "clearance_pos": 80,
+            "dip_pos": 20,
+            "dwell_ms": 1000,
+            "drip_dwell_ms": 100,
+            "dip_circle_count": 3,
+            "dip_circle_diameter_mm": 10,
+            "test_passed": True,
+            "tested_at": 123,
+        }
+        snapshot = server.ink_well_plot_snapshot(settings)
+        settings["centre"]["x_mm"] = 99
+
+        self.assertEqual(snapshot["centre"]["x_mm"], 10.0)
+        self.assertEqual(snapshot["dip_circle_count"], 3)
+        self.assertEqual(snapshot["dip_circle_diameter_mm"], 10.0)
+
+    def test_rejects_dip_circle_larger_than_well(self):
+        settings = {
+            "installed": False,
+            "centre": {"x_mm": 10, "y_mm": 20},
+            "radius_mm": 4,
+            "clearance_pos": 80,
+            "dip_pos": 20,
+            "dwell_ms": 1000,
+            "drip_dwell_ms": 0,
+            "dip_circle_count": 3,
+            "dip_circle_diameter_mm": 10,
+            "test_passed": False,
+        }
+
+        with self.assertRaisesRegex(ValueError, "fit inside"):
+            server.validate_ink_well_settings(settings)
+
+    def test_layer_analysis_rejects_keepout_collision(self):
+        with tempfile.TemporaryDirectory() as directory:
+            digest = Path(directory) / "digest.svg"
+            digest.write_text(
+                '<svg xmlns="http://www.w3.org/2000/svg">'
+                '<polyline points="0,0 4,0"/></svg>',
+                encoding="utf-8",
+            )
+            with (
+                mock.patch.object(server, "generate_plot_digest"),
+                self.assertRaisesRegex(ValueError, "keep-out zone"),
+            ):
+                server.analyse_layer_for_ink_well(
+                    Path(directory) / "input.svg",
+                    digest,
+                    job_settings={
+                        "speed_pendown": 15,
+                        "speed_penup": 40,
+                        "pen_pos_down": 35,
+                        "pen_pos_up": 65,
+                    },
+                    home={"x_mm": 0, "y_mm": 0},
+                    well={
+                        "centre": {"x_mm": 50, "y_mm": 0},
+                        "radius_mm": 5,
+                    },
+                )
+
+    def test_ink_well_test_cycle_does_not_auto_confirm_passed(self):
+        request = mock.Mock()
+        request.client.host = "127.0.0.1"
+        with server.ink_well_settings_lock:
+            server.ink_well_settings.update(
+                {
+                    "centre": {"x_mm": 10, "y_mm": 20},
+                    "radius_mm": 15,
+                    "clearance_pos": 80,
+                    "dip_pos": 20,
+                    "dwell_ms": 1000,
+                    "drip_dwell_ms": 0,
+                    "dip_circle_count": 3,
+                    "dip_circle_diameter_mm": 10,
+                    "test_passed": False,
+                    "tested_at": None,
+                }
+            )
+        with server.position_lock:
+            server.set_current_position_unlocked(10, 20)
+
+        with mock.patch.object(server, "execute_dip_cycle", return_value={"return_error_mm": 0}):
+            result = server.plotter_ink_well_test(request, x_plotter_token="test-token")
+
+        self.assertFalse(result["ink_well"]["test_passed"])
+        self.assertIsNotNone(result["ink_well"]["tested_at"])
+
+    def test_ink_well_test_confirmation_marks_passed_after_cycle(self):
+        request = mock.Mock()
+        request.client.host = "127.0.0.1"
+        with server.ink_well_settings_lock:
+            server.ink_well_settings.update(
+                {
+                    "centre": {"x_mm": 10, "y_mm": 20},
+                    "radius_mm": 15,
+                    "clearance_pos": 80,
+                    "dip_pos": 20,
+                    "dwell_ms": 1000,
+                    "drip_dwell_ms": 0,
+                    "dip_circle_count": 3,
+                    "dip_circle_diameter_mm": 10,
+                    "test_passed": False,
+                    "tested_at": 123,
+                }
+            )
+
+        result = server.plotter_ink_well_confirm_test(request, x_plotter_token="test-token")
+
+        self.assertTrue(result["ink_well"]["test_passed"])
+
+
+class AutoDipExecutionTests(unittest.TestCase):
+    def setUp(self):
+        server.jobs.clear()
+        with server.position_lock:
+            server.position_current = None
+
+    def test_prepares_checkpoint_digest_for_layer(self):
+        analysis = {
+            "dip_schedule": {
+                "checkpoint_after_strokes": [2, 5],
+            }
+        }
+        layer = {"plot_digest_svg": "/tmp/source.svg"}
+        with mock.patch.object(server, "write_checkpoint_digest", return_value=3) as write:
+            server.prepare_auto_dip_layer(layer, analysis)
+
+        self.assertEqual(layer["plot_svg"], "/tmp/auto_dip_plot.svg")
+        self.assertEqual(layer["auto_dip_checkpoint_count"], 2)
+        write.assert_called_once()
+
+    def test_programmatic_pause_runs_dip_then_resumes(self):
+        job = {
+            "id": "dip-job",
+            "auto_dip_enabled": True,
+            "dip_count": 0,
+            "ink_well": {},
+        }
+        layer = {"index": 1}
+        server.jobs[job["id"]] = job
+
+        with (
+            mock.patch.object(server, "execute_dip_cycle", return_value={"return_error_mm": 0}),
+            mock.patch.object(server, "run_layer", return_value="auto_dip_pause") as run,
+            mock.patch.object(server, "resume_layer", return_value="done") as resume,
+            mock.patch.object(server, "save_job_unlocked"),
+        ):
+            result = server.run_layer_with_auto_dips(job, layer, mock.Mock())
+
+        self.assertEqual(result, "done")
+        self.assertEqual(job["dip_count"], 2)
+        run.assert_called_once()
+        resume.assert_called_once()
+
+    def test_dip_failure_never_starts_plot(self):
+        job = {
+            "id": "dip-job",
+            "auto_dip_enabled": True,
+            "dip_count": 0,
+            "ink_well": {},
+        }
+        layer = {"index": 1}
+        server.jobs[job["id"]] = job
+
+        with (
+            mock.patch.object(server, "execute_dip_cycle", side_effect=RuntimeError("servo failed")),
+            mock.patch.object(server, "attempt_dip_clearance_raise"),
+            mock.patch.object(server, "run_layer") as run,
+            mock.patch.object(server, "announce_on_linux_box"),
+            mock.patch.object(server, "save_job_unlocked"),
+        ):
+            result = server.run_layer_with_auto_dips(job, layer, mock.Mock())
+
+        self.assertEqual(result, "dip_failed")
+        self.assertEqual(job["status"], "dip_failed")
+        self.assertEqual(job["dip_failure"]["phase"], "initial")
+        run.assert_not_called()
+
+    def test_dip_cycle_requires_calibrated_software_position(self):
+        job = {
+            "id": "dip-job",
+            "auto_dip_enabled": True,
+            "ink_well": {
+                "centre": {"x_mm": 10, "y_mm": 20},
+                "clearance_pos": 80,
+                "dip_pos": 20,
+                "dwell_ms": 1000,
+                "drip_dwell_ms": 0,
+            },
+        }
+
+        with self.assertRaises(HTTPException) as raised:
+            server.execute_dip_cycle(job, mock.Mock())
+
+        self.assertEqual(raised.exception.status_code, 409)
+
+    def test_validate_dip_interval(self):
+        self.assertEqual(server.validate_dip_interval(60), 60.0)
+        for value in (0, 86401, float("nan")):
+            with self.subTest(value=value), self.assertRaises(HTTPException):
+                server.validate_dip_interval(value)
 
 
 if __name__ == "__main__":

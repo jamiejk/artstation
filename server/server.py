@@ -13,8 +13,23 @@ import subprocess
 import signal
 import json
 import math
+import runpy
 import xml.etree.ElementTree as ET
 import serial
+try:
+    from server.ink_dip import (
+        estimate_checkpoint_schedule,
+        find_keepout_collision,
+        parse_plob_polylines,
+        write_checkpoint_digest,
+    )
+except ModuleNotFoundError:
+    from ink_dip import (
+        estimate_checkpoint_schedule,
+        find_keepout_collision,
+        parse_plob_polylines,
+        write_checkpoint_digest,
+    )
 
 APP_NAME = "ArtStation Layer Plotter Server"
 
@@ -26,6 +41,7 @@ STATIC_DIR = BASE_DIR / "server" / "static"
 POSITION_PATH = BASE_DIR / "plotter_position.json"
 PEN_SETTINGS_PATH = BASE_DIR / "plotter_pen_settings.json"
 PLOT_SETTINGS_PATH = BASE_DIR / "plotter_plot_settings.json"
+INK_WELL_SETTINGS_PATH = BASE_DIR / "plotter_ink_well_settings.json"
 
 AXICLI = os.environ.get("AXICLI", str(BASE_DIR / "venv" / "bin" / "axicli"))
 PLOTTER_PORT = os.environ.get("PLOTTER_PORT", "/dev/ttyACM0")
@@ -43,6 +59,19 @@ hardware_lock = threading.RLock()
 active_process_lock = threading.RLock()
 active_process: subprocess.Popen | None = None
 active_process_job_id: str | None = None
+motor_resolution_cache_lock = threading.RLock()
+motor_resolution_cache = {"value": None, "checked_at": 0.0}
+hardware_state_lock = threading.RLock()
+cached_hardware_state: dict = {
+    "busy": False,
+    "connected": False,
+    "port": PLOTTER_PORT,
+    "message": "Hardware telemetry has not been read yet",
+    "telemetry_stale": True,
+    "telemetry_updated_at": None,
+}
+manual_hardware_priority_lock = threading.RLock()
+manual_hardware_priority_until = 0.0
 position_lock = threading.RLock()
 position_offset = {"x_mm": 0.0, "y_mm": 0.0}
 position_current: dict | None = None
@@ -56,6 +85,21 @@ plot_settings = {
     "pen_delay_down": 0,
     "pen_delay_up": 0,
     "pen_rate_raise": 75,
+}
+ink_well_settings_lock = threading.RLock()
+ink_well_settings = {
+    "state_version": 1,
+    "installed": False,
+    "centre": None,
+    "radius_mm": None,
+    "clearance_pos": None,
+    "dip_pos": None,
+    "dwell_ms": 1000,
+    "drip_dwell_ms": 0,
+    "dip_circle_count": 3,
+    "dip_circle_diameter_mm": 10.0,
+    "test_passed": False,
+    "tested_at": None,
 }
 POSITION_STATE_VERSION = 2
 
@@ -74,11 +118,13 @@ ACTIVE_CANCELLABLE_STATUSES = {
     "queued",
     "queued_for_operator",
     "waiting_for_operator",
+    "dip_failed",
 }
 
 RUNNING_STATUSES = {
     "running",
     "queued_for_resume",
+    "dipping",
 }
 
 
@@ -194,8 +240,19 @@ DEFAULT_SPEED_PENUP = int(os.environ.get("PLOTTER_SPEED_PENUP", "40"))
 DEFAULT_PEN_DELAY_DOWN = int(os.environ.get("PLOTTER_PEN_DELAY_DOWN", "0"))
 DEFAULT_PEN_DELAY_UP = int(os.environ.get("PLOTTER_PEN_DELAY_UP", "0"))
 DEFAULT_PEN_RATE_RAISE = int(os.environ.get("PLOTTER_PEN_RATE_RAISE", "75"))
+DEFAULT_PEN_RATE_LOWER = int(os.environ.get("PLOTTER_PEN_RATE_LOWER", "50"))
 THEORETICAL_MAX_XY_SPEED_MM_S = float(os.environ.get("PLOTTER_MAX_XY_SPEED_MM_S", "280"))
 SAFE_MANUAL_MAX_XY_SPEED_MM_S = float(os.environ.get("PLOTTER_SAFE_MANUAL_MAX_XY_SPEED_MM_S", "200"))
+MOTOR_RESOLUTION_CACHE_TTL_S = float(os.environ.get("PLOTTER_MOTOR_RESOLUTION_CACHE_TTL_S", "10"))
+TELEMETRY_POLL_INTERVAL_S = float(os.environ.get("PLOTTER_TELEMETRY_POLL_INTERVAL_S", "0.5"))
+TELEMETRY_SERIAL_TIMEOUT_S = float(os.environ.get("PLOTTER_TELEMETRY_SERIAL_TIMEOUT_S", "0.15"))
+TELEMETRY_FULL_POLL_INTERVAL_S = float(os.environ.get("PLOTTER_TELEMETRY_FULL_POLL_INTERVAL_S", "10"))
+MANUAL_HARDWARE_PRIORITY_GRACE_S = float(os.environ.get("PLOTTER_MANUAL_HARDWARE_PRIORITY_GRACE_S", "0.25"))
+DIP_CIRCLE_SPEED_MM_S = float(os.environ.get("PLOTTER_DIP_CIRCLE_SPEED_MM_S", "60"))
+DIP_CIRCLE_SEGMENTS = int(os.environ.get("PLOTTER_DIP_CIRCLE_SEGMENTS", "12"))
+DIP_SERVO_RATE_LOWER = int(os.environ.get("PLOTTER_DIP_SERVO_RATE_LOWER", "200"))
+DIP_SERVO_RATE_RAISE = int(os.environ.get("PLOTTER_DIP_SERVO_RATE_RAISE", "200"))
+DIP_SERVO_EXTRA_SETTLE_MS = int(os.environ.get("PLOTTER_DIP_SERVO_EXTRA_SETTLE_MS", "0"))
 NATIVE_XY_RESOLUTION_STEPS_PER_INCH = float(os.environ.get("PLOTTER_NATIVE_XY_RESOLUTION_STEPS_PER_INCH", "2032"))
 NATIVE_XY_RESOLUTION_STEPS_PER_MM = float(os.environ.get("PLOTTER_NATIVE_XY_RESOLUTION_STEPS_PER_MM", "80"))
 MIN_MOTION_RESOLUTION_MM = float(os.environ.get("PLOTTER_MIN_MOTION_RESOLUTION_MM", "0.0125"))
@@ -247,10 +304,6 @@ def load_position_offset() -> None:
                 "x_mm": float(home.get("x_mm", 0.0)),
                 "y_mm": float(home.get("y_mm", 0.0)),
             }
-        elif position_current is not None:
-            # Older state files had no distinct home. The most recently
-            # calibrated/current point is the safest migration target.
-            home_position = dict(position_current)
     except Exception as exc:
         print(f"Could not load {POSITION_PATH}: {exc}", flush=True)
 
@@ -342,6 +395,118 @@ def apply_plot_settings_to_job(job: dict, settings: dict) -> None:
         job[key] = settings[key]
 
 
+def load_ink_well_settings() -> None:
+    with ink_well_settings_lock:
+        defaults = {
+            "state_version": 1,
+            "installed": False,
+            "centre": None,
+            "radius_mm": None,
+            "clearance_pos": None,
+            "dip_pos": None,
+            "dwell_ms": 1000,
+            "drip_dwell_ms": 0,
+            "dip_circle_count": 3,
+            "dip_circle_diameter_mm": 10.0,
+            "test_passed": False,
+            "tested_at": None,
+        }
+        ink_well_settings.clear()
+        ink_well_settings.update(defaults)
+        if not INK_WELL_SETTINGS_PATH.exists():
+            return
+        try:
+            data = json.loads(INK_WELL_SETTINGS_PATH.read_text(encoding="utf-8"))
+            if data.get("state_version") != 1:
+                raise ValueError("unsupported state version")
+            candidate = dict(defaults)
+            candidate.update(data)
+            validate_ink_well_settings(candidate, require_ready=bool(candidate.get("installed")))
+            ink_well_settings.update(candidate)
+        except Exception as exc:
+            print(f"Could not load {INK_WELL_SETTINGS_PATH}: {exc}", flush=True)
+
+
+def save_ink_well_settings_unlocked() -> None:
+    INK_WELL_SETTINGS_PATH.write_text(json.dumps(ink_well_settings, indent=2), encoding="utf-8")
+
+
+def current_ink_well_settings() -> dict:
+    with ink_well_settings_lock:
+        return json.loads(json.dumps(ink_well_settings))
+
+
+def validate_ink_well_settings(settings: dict, *, require_ready: bool = False) -> dict:
+    centre = settings.get("centre")
+    if centre is not None:
+        if not isinstance(centre, dict) or "x_mm" not in centre or "y_mm" not in centre:
+            raise ValueError("Ink well centre must contain x_mm and y_mm")
+        x_mm, y_mm = validate_bed_target(centre["x_mm"], centre["y_mm"])
+        settings["centre"] = {"x_mm": x_mm, "y_mm": y_mm}
+
+    radius = settings.get("radius_mm")
+    if radius is not None:
+        radius = float(radius)
+        if not math.isfinite(radius) or not 1 <= radius <= 250:
+            raise ValueError("Ink well radius_mm must be between 1 and 250")
+        settings["radius_mm"] = radius
+
+    for key in ("clearance_pos", "dip_pos"):
+        value = settings.get(key)
+        if value is not None:
+            value = int(value)
+            if not 0 <= value <= 100:
+                raise ValueError(f"{key} must be between 0 and 100")
+            settings[key] = value
+
+    for key, maximum in (("dwell_ms", 30000), ("drip_dwell_ms", 30000)):
+        value = int(settings.get(key, 0))
+        if not 0 <= value <= maximum:
+            raise ValueError(f"{key} must be between 0 and {maximum}")
+        settings[key] = value
+
+    circle_count_value = settings.get("dip_circle_count")
+    circle_count = 3 if circle_count_value is None else int(circle_count_value)
+    if not 0 <= circle_count <= 10:
+        raise ValueError("dip_circle_count must be between 0 and 10")
+    settings["dip_circle_count"] = circle_count
+
+    circle_diameter_value = settings.get("dip_circle_diameter_mm")
+    circle_diameter = 10.0 if circle_diameter_value is None else float(circle_diameter_value)
+    if not math.isfinite(circle_diameter) or not 0 <= circle_diameter <= 50:
+        raise ValueError("dip_circle_diameter_mm must be between 0 and 50")
+    if settings.get("radius_mm") is not None and circle_diameter > float(settings["radius_mm"]) * 2:
+        raise ValueError("dip_circle_diameter_mm must fit inside the ink well radius")
+    settings["dip_circle_diameter_mm"] = circle_diameter
+
+    if require_ready:
+        missing = [
+            key
+            for key in ("centre", "radius_mm", "clearance_pos", "dip_pos")
+            if settings.get(key) is None
+        ]
+        if missing:
+            raise ValueError(f"Ink well setup is incomplete: {', '.join(missing)}")
+        if not settings.get("test_passed"):
+            raise ValueError("Ink well test cycle must pass before it can be marked installed")
+    return settings
+
+
+def ink_well_plot_snapshot(settings: dict) -> dict:
+    validate_ink_well_settings(settings, require_ready=True)
+    return {
+        "centre": dict(settings["centre"]),
+        "radius_mm": settings["radius_mm"],
+        "clearance_pos": settings["clearance_pos"],
+        "dip_pos": settings["dip_pos"],
+        "dwell_ms": settings["dwell_ms"],
+        "drip_dwell_ms": settings["drip_dwell_ms"],
+        "dip_circle_count": settings["dip_circle_count"],
+        "dip_circle_diameter_mm": settings["dip_circle_diameter_mm"],
+        "tested_at": settings["tested_at"],
+    }
+
+
 def validate_speed_setting(value: int, name: str) -> int:
     value = int(value)
     if not 1 <= value <= 100:
@@ -374,6 +539,13 @@ def validate_pen_rate_raise(value: int) -> int:
     value = int(value)
     if not 1 <= value <= 100:
         raise HTTPException(status_code=400, detail="pen_rate_raise must be between 1 and 100")
+    return value
+
+
+def validate_dip_interval(value: float) -> float:
+    value = float(value)
+    if not math.isfinite(value) or not 1 <= value <= 86400:
+        raise HTTPException(status_code=400, detail="dip_interval_s must be between 1 and 86400")
     return value
 
 
@@ -514,6 +686,8 @@ def load_jobs() -> None:
                     "waiting_for_operator",
                     "queued_for_resume",
                     "running",
+                    "dipping",
+                    "dip_failed",
                 }:
                     job["status"] = "interrupted"
                     job["operator_message"] = (
@@ -603,6 +777,81 @@ def axicli_cmd() -> list[str]:
     return cmd
 
 
+def generate_plot_digest(input_svg: Path, output_svg: Path, job_settings: dict) -> None:
+    cmd = axicli_cmd() + [
+        str(input_svg),
+        "--digest",
+        "2",
+        "--output_file",
+        str(output_svg),
+        "--speed_pendown",
+        str(job_settings["speed_pendown"]),
+        "--speed_penup",
+        str(job_settings["speed_penup"]),
+        "--pen_pos_down",
+        str(job_settings["pen_pos_down"]),
+        "--pen_pos_up",
+        str(job_settings["pen_pos_up"]),
+    ]
+    proc = subprocess.run(
+        cmd,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+    )
+    if proc.returncode != 0 or not output_svg.exists():
+        raise ValueError(f"AxiDraw could not prepare the plot digest: {proc.stdout[-2000:]}")
+
+
+def analyse_layer_for_ink_well(
+    input_svg: Path,
+    digest_svg: Path,
+    *,
+    job_settings: dict,
+    home: dict,
+    well: dict,
+    dip_interval_s: float | None = None,
+) -> dict:
+    generate_plot_digest(input_svg, digest_svg, job_settings)
+    polylines = parse_plob_polylines(digest_svg)
+    collision = find_keepout_collision(
+        polylines,
+        origin_mm=(home["x_mm"], home["y_mm"]),
+        centre_mm=(well["centre"]["x_mm"], well["centre"]["y_mm"]),
+        radius_mm=well["radius_mm"],
+    )
+    if collision:
+        raise ValueError(
+            "Prepared plot intersects the installed ink well keep-out zone "
+            f"during {collision['motion']} motion at stroke {collision['stroke']}"
+        )
+
+    result = {
+        "stroke_count": len(polylines),
+        "keepout_clear": True,
+    }
+    if dip_interval_s is not None:
+        result["dip_schedule"] = estimate_checkpoint_schedule(
+            polylines,
+            speed_pendown=job_settings["speed_pendown"],
+            interval_s=dip_interval_s,
+        )
+    return result
+
+
+def prepare_auto_dip_layer(layer: dict, analysis: dict) -> None:
+    digest_svg = Path(layer["plot_digest_svg"])
+    prepared_svg = digest_svg.with_name("auto_dip_plot.svg")
+    schedule = analysis["dip_schedule"]
+    write_checkpoint_digest(
+        digest_svg,
+        prepared_svg,
+        schedule["checkpoint_after_strokes"],
+    )
+    layer["plot_svg"] = str(prepared_svg)
+    layer["auto_dip_checkpoint_count"] = len(schedule["checkpoint_after_strokes"])
+
+
 def run_control_command(cmd: list[str]) -> dict:
     require_hardware_idle()
     with hardware_lock:
@@ -646,75 +895,50 @@ def checked_return_home() -> dict:
     require_hardware_idle()
     home = current_home_position()
 
-    raise_cmd = manual_command_cmd("raise_pen")
-    home_cmd = manual_command_cmd("walk_home")
     actions = []
+    pen_defaults = current_pen_settings()
+    plot_defaults = current_plot_settings()
 
     with hardware_lock:
         try:
-            with serial.Serial(PLOTTER_PORT, timeout=1) as port:
+            with serial.Serial(PLOTTER_PORT, timeout=2) as port:
+                require_cached_high_resolution_motors(port)
                 pen_up, pen_ack = serial_query(port, "QP\r")
+                actions.append(
+                    {
+                        "action": "check_pen",
+                        "pen_up": pen_up == "1",
+                        "raw": pen_up,
+                        "ack": pen_ack,
+                    }
+                )
+
+                if pen_up != "1":
+                    raise_result = _run_pen_servo_on_port_locked(
+                        port,
+                        raised=True,
+                        up_pos=pen_defaults["pen_pos_up"],
+                        down_pos=pen_defaults["pen_pos_down"],
+                        raise_rate=plot_defaults.get("pen_rate_raise", DEFAULT_PEN_RATE_RAISE),
+                        lower_rate=DEFAULT_PEN_RATE_LOWER,
+                        delay_up_ms=plot_defaults.get("pen_delay_up", DEFAULT_PEN_DELAY_UP),
+                        delay_down_ms=plot_defaults.get("pen_delay_down", DEFAULT_PEN_DELAY_DOWN),
+                    )
+                    raise_result["action"] = "raise_pen"
+                    actions.append(raise_result)
+
+                actual = _move_to_bed_target_on_port_locked(
+                    port,
+                    home,
+                    speed_mm_s=min(SAFE_MANUAL_MAX_XY_SPEED_MM_S, 120.0),
+                )
+                actions.append({"action": "move_home", "ok": True, "home_position": home, "actual_position": actual})
         except serial.SerialException as exc:
             raise HTTPException(status_code=500, detail=str(exc)) from exc
+        except Exception as exc:
+            raise HTTPException(status_code=500, detail={"actions": actions, "error": repr(exc)}) from exc
 
-        actions.append(
-            {
-                "action": "check_pen",
-                "pen_up": pen_up == "1",
-                "raw": pen_up,
-                "ack": pen_ack,
-            }
-        )
-
-        if pen_up != "1":
-            raise_proc = subprocess.run(
-                raise_cmd,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.STDOUT,
-                text=True,
-            )
-            raise_result = {
-                "action": "raise_pen",
-                "ok": raise_proc.returncode == 0,
-                "returncode": raise_proc.returncode,
-                "command": raise_cmd,
-                "output": raise_proc.stdout,
-            }
-            actions.append(raise_result)
-            if raise_proc.returncode != 0:
-                raise HTTPException(status_code=500, detail={"actions": actions})
-
-        home_proc = subprocess.run(
-            home_cmd,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT,
-            text=True,
-        )
-        home_result = {
-            "action": "walk_home",
-            "ok": home_proc.returncode == 0,
-            "returncode": home_proc.returncode,
-            "command": home_cmd,
-            "output": home_proc.stdout,
-        }
-        actions.append(home_result)
-        if home_proc.returncode != 0:
-            raise HTTPException(status_code=500, detail={"actions": actions})
-
-        try:
-            with serial.Serial(PLOTTER_PORT, timeout=1) as port:
-                _axis_1, _axis_2, raw_after = read_step_position(port)
-        except (serial.SerialException, ValueError) as exc:
-            raise HTTPException(status_code=500, detail=f"Could not verify home position: {exc}") from exc
-
-    actual = current_position_estimate(raw_after)
-    if actual is None:
-        raise HTTPException(status_code=500, detail="Could not calculate position after returning home")
     home_error_mm = math.hypot(actual["x_mm"] - home["x_mm"], actual["y_mm"] - home["y_mm"])
-
-    with position_lock:
-        set_current_position_unlocked(actual["x_mm"], actual["y_mm"])
-        save_position_offset_unlocked()
 
     if home_error_mm > 0.5:
         raise HTTPException(
@@ -772,7 +996,7 @@ def raw_command(port: serial.Serial, command: str) -> str:
 
 def read_motor_resolution(port: serial.Serial) -> tuple[int | None, int | None]:
     def pin(command: str) -> bool:
-        value, _ack = serial_query(port, command)
+        value, _ack = serial_query(port, command, ack=False)
         return value.rsplit(",", 1)[-1].strip() == "1"
 
     enable_1 = not pin("PI,E,0\r")
@@ -795,7 +1019,11 @@ def read_motor_resolution(port: serial.Serial) -> tuple[int | None, int | None]:
 
 
 def require_enabled_high_resolution_motors(port: serial.Serial) -> None:
-    if read_motor_resolution(port) != (1, 1):
+    resolution = read_motor_resolution(port)
+    with motor_resolution_cache_lock:
+        motor_resolution_cache["value"] = resolution
+        motor_resolution_cache["checked_at"] = time.monotonic()
+    if resolution != (1, 1):
         raise HTTPException(
             status_code=409,
             detail=(
@@ -803,6 +1031,21 @@ def require_enabled_high_resolution_motors(port: serial.Serial) -> None:
                 "Enable motors, then recalibrate before moving."
             ),
         )
+
+
+def require_cached_high_resolution_motors(port: serial.Serial) -> None:
+    with motor_resolution_cache_lock:
+        cached_value = motor_resolution_cache["value"]
+        checked_at = motor_resolution_cache["checked_at"]
+    if cached_value == (1, 1) and time.monotonic() - checked_at <= MOTOR_RESOLUTION_CACHE_TTL_S:
+        return
+    require_enabled_high_resolution_motors(port)
+
+
+def invalidate_motor_resolution_cache() -> None:
+    with motor_resolution_cache_lock:
+        motor_resolution_cache["value"] = None
+        motor_resolution_cache["checked_at"] = 0.0
 
 
 def wait_for_motion_idle(port: serial.Serial, timeout_s: float) -> None:
@@ -828,42 +1071,430 @@ def read_step_position(port: serial.Serial) -> tuple[int, int, dict]:
     return axis_1, axis_2, steps_to_xy_mm(axis_1, axis_2)
 
 
-def read_hardware_state() -> dict:
-    if not hardware_lock.acquire(timeout=0.5):
-        return {"busy": True, "message": "Hardware serial port is in use"}
-    try:
+def ebb_command(port: serial.Serial, command: str) -> str:
+    port.write(command.encode("ascii"))
+    response = ""
+    for _ in range(101):
+        response = port.readline().decode("ascii", errors="replace").strip()
+        if response:
+            break
+    if not response.startswith("OK"):
+        raise RuntimeError(f"Unexpected EBB response to {command.strip()!r}: {response!r}")
+    return response
+
+
+def current_axidraw_servo_config() -> dict:
+    config = {
+        "servo_pin": 1,
+        "servo_min": 9855,
+        "servo_max": 27831,
+        "servo_sweep_time": 200,
+        "servo_move_min": 45,
+        "servo_move_slope": 2.69,
+    }
+    if AXICLI_CONFIG.exists():
         try:
-            with serial.Serial(PLOTTER_PORT, timeout=1) as port:
-                version, _ = serial_query(port, "v\r", ack=False)
-                pen_up, pen_ack = serial_query(port, "QP\r")
-                button, button_ack = serial_query(port, "QB\r")
-                steps, steps_ack = serial_query(port, "QS\r")
-
-                axis_1 = axis_2 = None
-                raw_xy_mm = None
-                try:
-                    axis_1_text, axis_2_text = steps.split(",", 1)
-                    axis_1 = int(axis_1_text)
-                    axis_2 = int(axis_2_text)
-                    raw_xy_mm = steps_to_xy_mm(axis_1, axis_2)
-                except ValueError:
-                    pass
-
-                motor_1_raw, _ = serial_query(port, "PI,E,0\r")
-                motor_2_raw, _ = serial_query(port, "PI,C,1\r")
-        except serial.SerialException as exc:
-            return {
-                "busy": False,
-                "connected": False,
-                "port": PLOTTER_PORT,
-                "error": str(exc),
-            }
-
-        with active_process_lock:
-            active_pid = active_process.pid if active_process else None
-            active_job = active_process_job_id
-
+            loaded = runpy.run_path(str(AXICLI_CONFIG))
+        except Exception as exc:
+            raise RuntimeError(f"Could not load AxiDraw servo config {AXICLI_CONFIG}: {exc!r}") from exc
+        for key in config:
+            if key in loaded:
+                config[key] = loaded[key]
+    try:
         return {
+            "servo_pin": int(config["servo_pin"]),
+            "servo_min": int(config["servo_min"]),
+            "servo_max": int(config["servo_max"]),
+            "servo_sweep_time": float(config["servo_sweep_time"]),
+            "servo_move_min": float(config["servo_move_min"]),
+            "servo_move_slope": float(config["servo_move_slope"]),
+        }
+    except (TypeError, ValueError) as exc:
+        raise RuntimeError(f"Invalid AxiDraw servo config values in {AXICLI_CONFIG}") from exc
+
+
+def servo_pwm_for_pen_position(config: dict, pen_position: float) -> int:
+    servo_min = config["servo_min"]
+    servo_max = config["servo_max"]
+    servo_slope = float(servo_max - servo_min) / 100.0
+    return int(round(servo_min + servo_slope * float(pen_position)))
+
+
+def servo_rate_value(config: dict, rate_percent: float) -> int:
+    servo_range = max(1, config["servo_max"] - config["servo_min"])
+    servo_sweep_time = max(1.0, float(config["servo_sweep_time"]))
+    # Matches axidrawinternal.pen_handling for the standard 8-channel servo PWM mode.
+    return max(1, int(round(float(servo_range) * 0.24 / servo_sweep_time * float(rate_percent))))
+
+
+def servo_travel_delay_ms(
+    config: dict,
+    up_position: float,
+    down_position: float,
+    rate_percent: float,
+    *,
+    extra_settle_ms: int = 0,
+) -> int:
+    travel_percent = abs(float(up_position) - float(down_position))
+    if travel_percent < 0.9:
+        return 0
+    rate_percent = max(1.0, float(rate_percent))
+    mechanical_ms = config["servo_move_slope"] * travel_percent + config["servo_move_min"]
+    sweep_ms = config["servo_sweep_time"] * travel_percent / rate_percent
+    return max(
+        0,
+        int(round(((mechanical_ms ** 4 + sweep_ms ** 4) ** 0.25) + extra_settle_ms)),
+    )
+
+
+def _run_pen_servo_on_port_locked(
+    port: serial.Serial,
+    *,
+    raised: bool,
+    up_pos: int,
+    down_pos: int,
+    raise_rate: int,
+    lower_rate: int,
+    delay_up_ms: int = 0,
+    delay_down_ms: int = 0,
+    extra_settle_ms: int = 0,
+    label: str | None = None,
+    log=None,
+) -> dict:
+    config = current_axidraw_servo_config()
+    up_pwm = servo_pwm_for_pen_position(config, up_pos)
+    down_pwm = servo_pwm_for_pen_position(config, down_pos)
+    up_rate = servo_rate_value(config, raise_rate)
+    down_rate = servo_rate_value(config, lower_rate)
+    rate = raise_rate if raised else lower_rate
+    configured_delay_ms = delay_up_ms if raised else delay_down_ms
+    delay_ms = servo_travel_delay_ms(
+        config,
+        up_pos,
+        down_pos,
+        rate,
+        extra_settle_ms=extra_settle_ms + configured_delay_ms,
+    )
+    pen_state = 1 if raised else 0
+    if log is not None:
+        log.write(
+            (label or ("Raise pen" if raised else "Lower pen"))
+            + f": direct EBB servo command, delay={delay_ms} ms\n"
+        )
+        log.flush()
+    ebb_command(port, f"SC,4,{up_pwm}\r")
+    ebb_command(port, f"SC,5,{down_pwm}\r")
+    ebb_command(port, f"SC,11,{up_rate}\r")
+    ebb_command(port, f"SC,12,{down_rate}\r")
+    ebb_command(port, "SC,8,8\r")
+    ebb_command(port, f"SP,{pen_state},{delay_ms},{config['servo_pin']}\r")
+    return {
+        "ok": True,
+        "position": "up" if raised else "down",
+        "method": "direct_ebb",
+        "delay_ms": delay_ms,
+        "up_pwm": up_pwm,
+        "down_pwm": down_pwm,
+    }
+
+
+def _run_dip_servo_on_port_locked(port: serial.Serial, job: dict, *, raised: bool, log) -> None:
+    well = job["ink_well"]
+    _run_pen_servo_on_port_locked(
+        port,
+        raised=raised,
+        up_pos=well["clearance_pos"],
+        down_pos=well["dip_pos"],
+        raise_rate=DIP_SERVO_RATE_RAISE,
+        lower_rate=DIP_SERVO_RATE_LOWER,
+        extra_settle_ms=DIP_SERVO_EXTRA_SETTLE_MS,
+        label="Raise to clearance" if raised else "Lower into ink",
+        log=log,
+    )
+
+
+def _run_dip_servo_locked(job: dict, *, raised: bool, log) -> None:
+    with serial.Serial(PLOTTER_PORT, timeout=2) as port:
+        _run_dip_servo_on_port_locked(port, job, raised=raised, log=log)
+
+
+def _move_to_bed_target_on_port_locked(
+    port: serial.Serial,
+    target: dict,
+    *,
+    speed_mm_s: float,
+    log=None,
+) -> dict:
+    target_x, target_y = validate_bed_target(target["x_mm"], target["y_mm"])
+    _axis_1, _axis_2, raw_current = read_step_position(port)
+    current = current_position_estimate(raw_current)
+    if current is None:
+        raise RuntimeError("Could not calculate current position")
+    delta_x = target_x - current["x_mm"]
+    delta_y = target_y - current["y_mm"]
+    distance = math.hypot(delta_x, delta_y)
+    if distance < 0.001:
+        return current
+
+    raw_delta = bed_delta_to_raw_delta(delta_x, delta_y)
+    axis_1_delta, axis_2_delta = xy_mm_to_steps(raw_delta["x_mm"], raw_delta["y_mm"])
+    duration_ms = max(40, int(round(distance / speed_mm_s * 1000)))
+    if log is not None:
+        log.write(
+            f"Move from ({current['x_mm']:.3f}, {current['y_mm']:.3f}) to "
+            f"({target_x:.3f}, {target_y:.3f}) at {speed_mm_s:.1f} mm/s\n"
+        )
+        log.flush()
+    response = raw_command(port, f"SM,{duration_ms},{axis_1_delta},{axis_2_delta}\r")
+    if not response.startswith("OK"):
+        raise RuntimeError(f"EBB move failed: {response!r}")
+    wait_for_motion_idle(port, max(2.0, duration_ms / 1000.0 + 1.0))
+    _axis_1_after, _axis_2_after, raw_after = read_step_position(port)
+
+    actual = current_position_estimate(raw_after)
+    if actual is None:
+        raise RuntimeError("Could not calculate position after movement")
+    with position_lock:
+        set_current_position_unlocked(actual["x_mm"], actual["y_mm"])
+        save_position_offset_unlocked()
+    return actual
+
+
+def _move_to_bed_target_locked(target: dict, *, speed_mm_s: float, log) -> dict:
+    with serial.Serial(PLOTTER_PORT, timeout=2) as port:
+        require_enabled_high_resolution_motors(port)
+        return _move_to_bed_target_on_port_locked(port, target, speed_mm_s=speed_mm_s, log=log)
+
+
+def _run_bed_delta_locked(
+    port: serial.Serial,
+    delta_x: float,
+    delta_y: float,
+    *,
+    speed_mm_s: float,
+) -> None:
+    distance = math.hypot(delta_x, delta_y)
+    if distance < 0.001:
+        return
+    raw_delta = bed_delta_to_raw_delta(delta_x, delta_y)
+    axis_1_delta, axis_2_delta = xy_mm_to_steps(raw_delta["x_mm"], raw_delta["y_mm"])
+    duration_ms = max(40, int(round(distance / speed_mm_s * 1000)))
+    response = raw_command(port, f"SM,{duration_ms},{axis_1_delta},{axis_2_delta}\r")
+    if not response.startswith("OK"):
+        raise RuntimeError(f"EBB dip-circle move failed: {response!r}")
+    wait_for_motion_idle(port, max(2.0, duration_ms / 1000.0 + 1.0))
+
+
+def _run_dip_circles_on_port_locked(port: serial.Serial, job: dict, log) -> dict:
+    well = job["ink_well"]
+    count = int(well.get("dip_circle_count", 0) or 0)
+    diameter_mm = float(well.get("dip_circle_diameter_mm", 0.0) or 0.0)
+    if count <= 0 or diameter_mm <= 0:
+        return {"count": 0, "diameter_mm": diameter_mm}
+
+    centre = well["centre"]
+    centre_x, centre_y = validate_bed_target(centre["x_mm"], centre["y_mm"])
+    radius_mm = diameter_mm / 2.0
+    segments = max(8, int(DIP_CIRCLE_SEGMENTS))
+    speed_mm_s = min(SAFE_MANUAL_MAX_XY_SPEED_MM_S, max(1.0, DIP_CIRCLE_SPEED_MM_S))
+    targets: list[tuple[float, float]] = [(centre_x + radius_mm, centre_y)]
+    for _circle in range(count):
+        for segment in range(1, segments + 1):
+            theta = (math.tau * segment) / segments
+            targets.append(
+                (
+                    centre_x + radius_mm * math.cos(theta),
+                    centre_y + radius_mm * math.sin(theta),
+                )
+            )
+    targets.append((centre_x, centre_y))
+    for target_x, target_y in targets:
+        validate_bed_target(target_x, target_y)
+
+    log.write(
+        f"Dip circle agitation: {count} circle(s), diameter={diameter_mm:.1f} mm, "
+        f"speed={speed_mm_s:.1f} mm/s\n"
+    )
+    log.flush()
+
+    current_x, current_y = centre_x, centre_y
+    for target_x, target_y in targets:
+        _run_bed_delta_locked(
+            port,
+            target_x - current_x,
+            target_y - current_y,
+            speed_mm_s=speed_mm_s,
+        )
+        current_x, current_y = target_x, target_y
+    _axis_1_after, _axis_2_after, raw_after = read_step_position(port)
+
+    actual = current_position_estimate(raw_after)
+    if actual is None:
+        actual = {"x_mm": centre_x, "y_mm": centre_y}
+    with position_lock:
+        set_current_position_unlocked(actual["x_mm"], actual["y_mm"])
+        save_position_offset_unlocked()
+    return {
+        "count": count,
+        "diameter_mm": diameter_mm,
+        "actual_position": actual,
+    }
+
+
+def _run_dip_circles_locked(job: dict, log) -> dict:
+    with serial.Serial(PLOTTER_PORT, timeout=2) as port:
+        require_enabled_high_resolution_motors(port)
+        return _run_dip_circles_on_port_locked(port, job, log)
+
+
+def execute_dip_cycle(job: dict, log, *, return_position: dict | None = None) -> dict:
+    well = job.get("ink_well")
+    if not job.get("auto_dip_enabled") or not well:
+        raise RuntimeError("Automatic dipping is not configured for this job")
+
+    if return_position is None:
+        return_position = current_software_position()
+
+    speed_mm_s = min(SAFE_MANUAL_MAX_XY_SPEED_MM_S, 60.0)
+    with hardware_lock:
+        with serial.Serial(PLOTTER_PORT, timeout=2) as port:
+            require_enabled_high_resolution_motors(port)
+            _run_dip_servo_on_port_locked(port, job, raised=True, log=log)
+            update_job(job["id"], dip_return_position=dict(return_position))
+            _move_to_bed_target_on_port_locked(port, well["centre"], speed_mm_s=speed_mm_s, log=log)
+            _run_dip_servo_on_port_locked(port, job, raised=False, log=log)
+            circle_result = _run_dip_circles_on_port_locked(port, job, log)
+            time.sleep(well["dwell_ms"] / 1000.0)
+            _run_dip_servo_on_port_locked(port, job, raised=True, log=log)
+            if well.get("drip_dwell_ms", 0):
+                time.sleep(well["drip_dwell_ms"] / 1000.0)
+            actual = _move_to_bed_target_on_port_locked(port, return_position, speed_mm_s=speed_mm_s, log=log)
+
+    error_mm = math.hypot(
+        actual["x_mm"] - return_position["x_mm"],
+        actual["y_mm"] - return_position["y_mm"],
+    )
+    if error_mm > 0.5:
+        raise RuntimeError(f"Dip return verification failed with {error_mm:.4f} mm error")
+    return {
+        "return_position": dict(return_position),
+        "actual_position": actual,
+        "return_error_mm": round(error_mm, 4),
+        "dip_circles": circle_result,
+    }
+
+
+def attempt_dip_clearance_raise(job: dict, log) -> None:
+    try:
+        with hardware_lock:
+            _run_dip_servo_locked(job, raised=True, log=log)
+    except Exception as exc:
+        log.write(f"Emergency clearance raise also failed: {exc!r}\n")
+        log.flush()
+
+
+def return_from_failed_dip_without_loading_ink(job: dict, log, return_position: dict) -> dict:
+    with hardware_lock:
+        _run_dip_servo_locked(job, raised=True, log=log)
+        actual = _move_to_bed_target_locked(return_position, speed_mm_s=60.0, log=log)
+    error_mm = math.hypot(
+        actual["x_mm"] - return_position["x_mm"],
+        actual["y_mm"] - return_position["y_mm"],
+    )
+    if error_mm > 0.5:
+        raise RuntimeError(f"Skip-dip return verification failed with {error_mm:.4f} mm error")
+    return {
+        "return_position": dict(return_position),
+        "actual_position": actual,
+        "return_error_mm": round(error_mm, 4),
+        "skipped": True,
+    }
+
+
+def mark_manual_hardware_priority(duration_s: float | None = None) -> None:
+    global manual_hardware_priority_until
+    duration = MANUAL_HARDWARE_PRIORITY_GRACE_S if duration_s is None else float(duration_s)
+    with manual_hardware_priority_lock:
+        manual_hardware_priority_until = max(manual_hardware_priority_until, time.monotonic() + max(0.0, duration))
+
+
+def manual_hardware_priority_active() -> bool:
+    with manual_hardware_priority_lock:
+        return time.monotonic() < manual_hardware_priority_until
+
+
+def overlay_live_hardware_fields(state: dict) -> dict:
+    result = dict(state)
+    with active_process_lock:
+        active_pid = active_process.pid if active_process else None
+        active_job = active_process_job_id
+    with position_lock:
+        raw_xy_mm = result.get("raw_position_estimate")
+        result["position_offset"] = dict(position_offset)
+        result["home_position"] = dict(home_position) if home_position is not None else None
+        result["position_source"] = "software" if position_current is not None else "step_counter"
+        if position_current is not None:
+            result["position_estimate"] = dict(position_current)
+        else:
+            result["position_estimate"] = current_position_estimate(raw_xy_mm)
+    result["active_process"] = {"pid": active_pid, "job_id": active_job}
+    return result
+
+
+def cached_hardware_snapshot() -> dict:
+    with hardware_state_lock:
+        state = json.loads(json.dumps(cached_hardware_state))
+    state = overlay_live_hardware_fields(state)
+    updated_at = state.get("telemetry_updated_at")
+    state["telemetry_age_s"] = round(now() - updated_at, 3) if updated_at else None
+    return state
+
+
+def update_cached_hardware_state(fields: dict) -> None:
+    with hardware_state_lock:
+        cached_hardware_state.clear()
+        cached_hardware_state.update(fields)
+
+
+def read_hardware_state_from_device(previous: dict | None = None, *, full: bool = False) -> dict:
+    previous = previous or {}
+    try:
+        with serial.Serial(PLOTTER_PORT, timeout=TELEMETRY_SERIAL_TIMEOUT_S) as port:
+            version = previous.get("firmware")
+            motor_enable_raw = previous.get("motor_enable_raw")
+            if full or not version:
+                version, _ = serial_query(port, "v\r", ack=False)
+
+            pen_up, pen_ack = serial_query(port, "QP\r")
+            button, button_ack = serial_query(port, "QB\r")
+            steps, steps_ack = serial_query(port, "QS\r")
+
+            axis_1 = axis_2 = None
+            raw_xy_mm = None
+            try:
+                axis_1_text, axis_2_text = steps.split(",", 1)
+                axis_1 = int(axis_1_text)
+                axis_2 = int(axis_2_text)
+                raw_xy_mm = steps_to_xy_mm(axis_1, axis_2)
+            except ValueError:
+                pass
+
+            if full or not motor_enable_raw:
+                motor_1_raw, _ = serial_query(port, "PI,E,0\r", ack=False)
+                motor_2_raw, _ = serial_query(port, "PI,C,1\r", ack=False)
+                motor_enable_raw = {"axis_1": motor_1_raw, "axis_2": motor_2_raw}
+    except serial.SerialException as exc:
+        return {
+            "busy": False,
+            "connected": False,
+            "port": PLOTTER_PORT,
+            "error": str(exc),
+            "telemetry_stale": False,
+            "telemetry_updated_at": now(),
+        }
+
+    return overlay_live_hardware_fields(
+        {
             "busy": False,
             "connected": True,
             "port": PLOTTER_PORT,
@@ -873,16 +1504,54 @@ def read_hardware_state() -> dict:
             "steps": {"axis_1": axis_1, "axis_2": axis_2, "raw": steps},
             "raw_position_estimate": raw_xy_mm,
             "bed_position_unoffset": raw_xy_to_bed_xy(raw_xy_mm),
-            "position_offset": dict(position_offset),
-            "position_estimate": current_position_estimate(raw_xy_mm),
-            "home_position": dict(home_position) if home_position is not None else None,
-            "position_source": "software" if position_current is not None else "step_counter",
-            "motor_enable_raw": {"axis_1": motor_1_raw, "axis_2": motor_2_raw},
+            "motor_enable_raw": motor_enable_raw,
             "acks": {"pen": pen_ack, "button": button_ack, "steps": steps_ack},
-            "active_process": {"pid": active_pid, "job_id": active_job},
+            "telemetry_stale": False,
+            "telemetry_updated_at": now(),
         }
+    )
+
+
+def poll_hardware_state_once(*, full: bool = False) -> bool:
+    if manual_hardware_priority_active():
+        return False
+    if not hardware_lock.acquire(blocking=False):
+        return False
+    try:
+        previous = cached_hardware_snapshot()
+        update_cached_hardware_state(read_hardware_state_from_device(previous, full=full))
+        return True
     finally:
         hardware_lock.release()
+
+
+def hardware_telemetry_worker() -> None:
+    last_full_poll = 0.0
+    while True:
+        try:
+            monotonic_now = time.monotonic()
+            full = monotonic_now - last_full_poll >= TELEMETRY_FULL_POLL_INTERVAL_S
+            if poll_hardware_state_once(full=full):
+                if full:
+                    last_full_poll = monotonic_now
+        except Exception as exc:
+            snapshot = cached_hardware_snapshot()
+            snapshot.update(
+                {
+                    "busy": False,
+                    "connected": False,
+                    "port": PLOTTER_PORT,
+                    "error": repr(exc),
+                    "telemetry_stale": True,
+                    "telemetry_updated_at": now(),
+                }
+            )
+            update_cached_hardware_state(snapshot)
+        time.sleep(max(0.05, TELEMETRY_POLL_INTERVAL_S))
+
+
+def read_hardware_state() -> dict:
+    return cached_hardware_snapshot()
 
 
 def bleep(times: int = 3, gap: float = 0.25) -> None:
@@ -1028,7 +1697,7 @@ def run_layer(job: dict, layer: dict, log) -> str:
       "failed"
     """
     cmd = axicli_cmd() + [
-        str(layer["input_svg"]),
+        str(layer.get("plot_svg") or layer["input_svg"]),
         "--port",
         PLOTTER_PORT,
         "-o",
@@ -1053,10 +1722,14 @@ def run_layer(job: dict, layer: dict, log) -> str:
     log.write(f"Layer {layer['index']}: {layer['name']}\n")
     log.write(" ".join(cmd) + "\n\n")
     log.flush()
+    log_start = Path(job["log_path"]).stat().st_size
 
     returncode = run_axicli_command(cmd, log, job_id=job["id"])
-    text = log_tail(Path(job["log_path"]))
+    log.flush()
+    text = Path(job["log_path"]).read_text(encoding="utf-8", errors="replace")[log_start:]
 
+    if "Plot paused programmatically" in text:
+        return "auto_dip_pause"
     if "Plot paused" in text or "Use the resume feature" in text:
         return "paused"
 
@@ -1118,6 +1791,8 @@ def resume_layer(job: dict, layer: dict, log) -> str:
 
     log.flush()
     text = Path(job["log_path"]).read_text(encoding="utf-8", errors="replace")[resume_log_start:]
+    if "Plot paused programmatically" in text:
+        return "auto_dip_pause"
     if "Plot paused" in text or "Use the resume feature" in text:
         return "paused"
 
@@ -1125,6 +1800,66 @@ def resume_layer(job: dict, layer: dict, log) -> str:
         return "done"
 
     return "failed"
+
+
+def run_layer_with_auto_dips(
+    job: dict,
+    layer: dict,
+    log,
+    *,
+    resume: bool = False,
+    perform_initial_dip: bool = True,
+) -> str:
+    if not job.get("auto_dip_enabled"):
+        return resume_layer(job, layer, log) if resume else run_layer(job, layer, log)
+
+    def perform_dip(phase: str) -> bool:
+        update_job(
+            job["id"],
+            status="dipping",
+            dip_phase=phase,
+            dip_layer=layer["index"],
+        )
+        try:
+            result = execute_dip_cycle(job, log)
+            update_job(
+                job["id"],
+                dip_count=int(job.get("dip_count", 0)) + 1,
+                last_dip=result,
+                status="running",
+                dip_phase=None,
+            )
+            return True
+        except Exception as exc:
+            attempt_dip_clearance_raise(job, log)
+            update_job(
+                job["id"],
+                status="dip_failed",
+                dip_failure={
+                    "error": repr(exc),
+                    "layer": layer["index"],
+                    "phase": phase,
+                    "return_position": jobs.get(job["id"], {}).get("dip_return_position"),
+                    "created_at": now(),
+                },
+                operator_message=(
+                    "Automatic dip failed. Use Retry Dip, Skip Dip & Resume, or Cancel. "
+                    "The job will not resume automatically."
+                ),
+            )
+            announce_on_linux_box(f"Job {job['id']} automatic dip failed: {exc!r}")
+            return False
+
+    if not resume and perform_initial_dip and not perform_dip("initial"):
+        return "dip_failed"
+
+    update_job(job["id"], status="running", dip_phase=None)
+    plot_result = resume_layer(job, layer, log) if resume else run_layer(job, layer, log)
+    while plot_result == "auto_dip_pause":
+        if not perform_dip("checkpoint"):
+            return "dip_failed"
+        plot_result = resume_layer(job, layer, log)
+    return plot_result
 
 
 def continue_job_after_layer(job_id: str, start_layer_number: int, log) -> None:
@@ -1145,7 +1880,10 @@ def continue_job_after_layer(job_id: str, start_layer_number: int, log) -> None:
             current_layer_name=layer["name"],
         )
 
-        result = run_layer(job, layer, log)
+        result = run_layer_with_auto_dips(job, layer, log)
+        if result == "dip_failed":
+            stop_current_job = True
+            break
         if result == "paused":
             update_job(
                 job_id,
@@ -1230,7 +1968,10 @@ def resume_paused_job(job_id: str) -> None:
                 resumed_at=now(),
             )
 
-            result = resume_layer(job, layer, log)
+            result = run_layer_with_auto_dips(job, layer, log, resume=True)
+
+            if result == "dip_failed":
+                return
 
             if result == "paused":
                 update_job(
@@ -1276,6 +2017,101 @@ def resume_paused_job(job_id: str) -> None:
             log_tail=log_tail(log_path),
         )
         announce_on_linux_box(f"Job {job_id} resume failed: {exc!r}")
+
+
+def recover_dip_failed_job(job_id: str, *, retry_dip: bool) -> None:
+    with jobs_lock:
+        job = jobs[job_id]
+        failure = dict(job.get("dip_failure") or {})
+        layer_number = int(failure.get("layer") or job.get("current_layer") or 1)
+        layer = next((item for item in job["layers"] if item["index"] == layer_number), None)
+    log_path = Path(job["log_path"])
+
+    if layer is None:
+        update_job(job_id, status="failed", error=f"Dip recovery layer not found: {layer_number}")
+        return
+
+    try:
+        with log_path.open("a", encoding="utf-8", errors="replace") as log:
+            return_position = failure.get("return_position")
+            if not isinstance(return_position, dict):
+                raise RuntimeError("Dip recovery has no verified checkpoint return position")
+
+            update_job(
+                job_id,
+                status="dipping",
+                operator_message=None,
+                dip_recovery="retry" if retry_dip else "skip",
+            )
+            if retry_dip:
+                recovery_result = execute_dip_cycle(job, log, return_position=return_position)
+                update_job(job_id, dip_count=int(job.get("dip_count", 0)) + 1)
+            else:
+                recovery_result = return_from_failed_dip_without_loading_ink(
+                    job,
+                    log,
+                    return_position,
+                )
+            update_job(
+                job_id,
+                last_dip=recovery_result,
+                dip_failure=None,
+                dip_recovery=None,
+                status="running",
+                dip_phase=None,
+            )
+
+            resume_from_progress = failure.get("phase") == "checkpoint"
+            result = run_layer_with_auto_dips(
+                job,
+                layer,
+                log,
+                resume=resume_from_progress,
+                perform_initial_dip=False,
+            )
+            if result in {"dip_failed", "paused"}:
+                if result == "paused":
+                    update_job(job_id, status="paused", paused_layer=layer_number)
+                return
+            if result != "done":
+                update_job(
+                    job_id,
+                    status="failed",
+                    failed_layer=layer_number,
+                    finished_at=now(),
+                    log_tail=log_tail(log_path),
+                )
+                return
+
+            update_job(job_id, last_completed_layer=layer_number, log_tail=log_tail(log_path))
+            home_return_code = return_home(log)
+            if home_return_code != 0:
+                update_job(
+                    job_id,
+                    status="failed",
+                    failed_layer=layer_number,
+                    finished_at=now(),
+                    error=f"walk_home failed with return code {home_return_code}",
+                )
+                return
+            continue_job_after_layer(job_id, layer_number, log)
+    except Exception as exc:
+        with log_path.open("a", encoding="utf-8", errors="replace") as recovery_log:
+            attempt_dip_clearance_raise(job, recovery_log)
+        update_job(
+            job_id,
+            status="dip_failed",
+            operator_message=(
+                "Dip recovery failed. Check the machine, then Retry Dip, Skip Dip & Resume, or Cancel."
+            ),
+            dip_failure={
+                **failure,
+                "error": repr(exc),
+                "created_at": now(),
+            },
+            log_tail=log_tail(log_path),
+        )
+        announce_on_linux_box(f"Job {job_id} dip recovery failed: {exc!r}")
 
 
 def worker() -> None:
@@ -1333,7 +2169,11 @@ def worker() -> None:
                         current_layer_name=layer["name"],
                     )
 
-                    result = run_layer(job, layer, log)
+                    result = run_layer_with_auto_dips(job, layer, log)
+
+                    if result == "dip_failed":
+                        stop_current_job = True
+                        break
 
                     if result == "paused":
                         update_job(
@@ -1433,8 +2273,10 @@ def worker() -> None:
 load_position_offset()
 load_pen_settings()
 load_plot_settings()
+load_ink_well_settings()
 load_jobs()
 if os.environ.get("PLOTTER_DISABLE_WORKER") != "1":
+    threading.Thread(target=hardware_telemetry_worker, daemon=True).start()
     threading.Thread(target=worker, daemon=True).start()
 
 
@@ -1465,6 +2307,7 @@ def control_config(request: Request):
     require_localhost(request)
     pen_defaults = current_pen_settings()
     plot_defaults = current_plot_settings()
+    well_defaults = current_ink_well_settings()
     forwarded_proto = request.headers.get("x-forwarded-proto")
     scheme = forwarded_proto or request.url.scheme
     http_host = request.headers.get("host") or f"{request.url.hostname}:{request.url.port}"
@@ -1482,6 +2325,7 @@ def control_config(request: Request):
         "pen_delay_down": plot_defaults["pen_delay_down"],
         "pen_delay_up": plot_defaults["pen_delay_up"],
         "pen_rate_raise": plot_defaults["pen_rate_raise"],
+        "ink_well": well_defaults,
         "motion_spec": motion_spec(),
         "axicli_config": str(AXICLI_CONFIG) if AXICLI_CONFIG.exists() else None,
     }
@@ -1498,6 +2342,8 @@ async def plot_layers(
     pen_rate_raise: Optional[int] = Form(None),
     pen_pos_down: Optional[int] = Form(None),
     pen_pos_up: Optional[int] = Form(None),
+    auto_dip: bool = Form(False),
+    dip_interval_s: Optional[float] = Form(None),
     x_plotter_token: Optional[str] = Header(default=None),
 ):
     """
@@ -1531,6 +2377,39 @@ async def plot_layers(
         pen_pos_down = pen_defaults["pen_pos_down"]
     if pen_pos_up is None:
         pen_pos_up = pen_defaults["pen_pos_up"]
+    pen_pos_down = validate_pen_position(pen_pos_down, "pen_pos_down")
+    pen_pos_up = validate_pen_position(pen_pos_up, "pen_pos_up")
+
+    upload_settings = {
+        "speed_pendown": speed_pendown,
+        "speed_penup": speed_penup,
+        "pen_pos_down": pen_pos_down,
+        "pen_pos_up": pen_pos_up,
+    }
+    well_settings = current_ink_well_settings()
+    well_snapshot = None
+    upload_home = None
+    if auto_dip:
+        if not well_settings.get("installed"):
+            raise HTTPException(
+                status_code=409,
+                detail="Complete the ink well test and mark it installed before enabling automatic dipping",
+            )
+        if dip_interval_s is None:
+            raise HTTPException(status_code=400, detail="dip_interval_s is required when auto_dip is enabled")
+        dip_interval_s = validate_dip_interval(dip_interval_s)
+    if well_settings.get("installed"):
+        try:
+            well_snapshot = ink_well_plot_snapshot(well_settings)
+        except ValueError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        try:
+            upload_home = current_home_position()
+        except HTTPException as exc:
+            raise HTTPException(
+                status_code=409,
+                detail="Calibrate and save Home before uploading while the ink well is installed",
+            ) from exc
 
     if not files:
         raise HTTPException(status_code=400, detail="No files uploaded")
@@ -1560,6 +2439,7 @@ async def plot_layers(
 
         input_svg = layer_dir / "input.svg"
         progress_svg = layer_dir / "progress.svg"
+        digest_svg = layer_dir / "plot_digest.svg"
 
         with input_svg.open("wb") as out:
             shutil.copyfileobj(uploaded.file, out)
@@ -1568,6 +2448,25 @@ async def plot_layers(
             svg_metrics = validate_svg_file(input_svg)
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+        ink_analysis = None
+        if well_snapshot is not None:
+            try:
+                ink_analysis = analyse_layer_for_ink_well(
+                    input_svg,
+                    digest_svg,
+                    job_settings=upload_settings,
+                    home=upload_home,
+                    well=well_snapshot,
+                    dip_interval_s=dip_interval_s if auto_dip else None,
+                )
+                if auto_dip:
+                    layer_stub = {
+                        "plot_digest_svg": str(digest_svg),
+                    }
+                    prepare_auto_dip_layer(layer_stub, ink_analysis)
+            except ValueError as exc:
+                raise HTTPException(status_code=400, detail=str(exc)) from exc
 
         name = (
             names[idx - 1]
@@ -1582,7 +2481,10 @@ async def plot_layers(
                 "original_filename": uploaded.filename,
                 "input_svg": str(input_svg),
                 "progress_svg": str(progress_svg),
+                "plot_digest_svg": str(digest_svg) if ink_analysis is not None else None,
+                "plot_svg": layer_stub.get("plot_svg") if auto_dip else None,
                 "svg_metrics": svg_metrics,
+                "ink_analysis": ink_analysis,
             }
         )
 
@@ -1602,6 +2504,11 @@ async def plot_layers(
         "pen_rate_raise": pen_rate_raise,
         "pen_pos_down": pen_pos_down,
         "pen_pos_up": pen_pos_up,
+        "ink_well": well_snapshot,
+        "auto_dip_enabled": auto_dip,
+        "dip_interval_s": dip_interval_s if auto_dip else None,
+        "dip_count": 0,
+        "dip_failure": None,
         "current_layer": None,
         "current_layer_name": None,
         "last_completed_layer": None,
@@ -1618,6 +2525,12 @@ async def plot_layers(
         "job_id": job_id,
         "status": "queued",
         "layer_count": len(layers),
+        "auto_dip_enabled": auto_dip,
+        "dip_estimates": [
+            layer["ink_analysis"]["dip_schedule"]
+            for layer in layers
+            if layer.get("ink_analysis", {}).get("dip_schedule")
+        ],
         "status_url": f"/jobs/{job_id}",
     }
 
@@ -1651,6 +2564,10 @@ def list_jobs(
                     "pen_pos_down": job.get("pen_pos_down"),
                     "pen_pos_up": job.get("pen_pos_up"),
                     "operator_message": job.get("operator_message"),
+                    "auto_dip_enabled": job.get("auto_dip_enabled", False),
+                    "dip_interval_s": job.get("dip_interval_s"),
+                    "dip_count": job.get("dip_count", 0),
+                    "dip_failure": job.get("dip_failure"),
                     "rerun_of": job.get("rerun_of"),
                     "log_path": job.get("log_path"),
                 }
@@ -1788,6 +2705,47 @@ def resume_job(
     }
 
 
+@app.post("/jobs/{job_id}/dip_recovery")
+def recover_dip_job(
+    job_id: str,
+    payload: dict = Body(...),
+    x_plotter_token: Optional[str] = Header(default=None),
+):
+    check_token(x_plotter_token)
+    require_hardware_idle()
+    action = str(payload.get("action", "")).strip().lower()
+    if action not in {"retry", "skip"}:
+        raise HTTPException(status_code=400, detail="action must be 'retry' or 'skip'")
+
+    with jobs_lock:
+        job = jobs.get(job_id)
+        if not job:
+            raise HTTPException(status_code=404, detail="Job not found")
+        if job.get("status") != "dip_failed":
+            raise HTTPException(status_code=400, detail=f"Job is not dip_failed: {job.get('status')!r}")
+        failure = job.get("dip_failure") or {}
+        if not isinstance(failure.get("return_position"), dict):
+            raise HTTPException(
+                status_code=409,
+                detail="No verified return position is available; cancel and rerun after recalibration",
+            )
+        job["status"] = "queued_for_resume"
+        job["operator_message"] = f"Dip recovery requested: {action}."
+        save_job_unlocked(job_id)
+
+    threading.Thread(
+        target=recover_dip_failed_job,
+        kwargs={"job_id": job_id, "retry_dip": action == "retry"},
+        daemon=True,
+    ).start()
+    return {
+        "ok": True,
+        "job_id": job_id,
+        "status": "queued_for_resume",
+        "action": action,
+    }
+
+
 @app.post("/jobs/clear")
 def clear_jobs(
     payload: dict = Body(default={}),
@@ -1799,7 +2757,7 @@ def clear_jobs(
     clear_statuses = set(
         payload.get(
             "statuses",
-            ["done", "failed", "cancelled", "interrupted", "paused"],
+            ["done", "failed", "cancelled", "interrupted", "paused", "dip_failed"],
         )
     )
 
@@ -1809,7 +2767,7 @@ def clear_jobs(
     with jobs_lock:
         for job_id, job in list(jobs.items()):
             status = job.get("status")
-            if status in {"queued", "queued_for_operator", "waiting_for_operator", "queued_for_resume", "running"}:
+            if status in {"queued", "queued_for_operator", "waiting_for_operator", "queued_for_resume", "running", "dipping"}:
                 skipped.append({"id": job_id, "status": status})
                 continue
             if status not in clear_statuses:
@@ -1859,7 +2817,9 @@ def rerun_job(
         "queued",
         "queued_for_operator",
         "waiting_for_operator",
+        "queued_for_resume",
         "running",
+        "dipping",
     }:
         raise HTTPException(
             status_code=400,
@@ -1869,6 +2829,28 @@ def rerun_job(
     new_job_id = uuid.uuid4().hex[:12]
     new_job_dir = job_dir(new_job_id)
     new_job_dir.mkdir(parents=True, exist_ok=True)
+
+    current_plot_defaults = current_plot_settings()
+    rerun_settings = {
+        "speed_pendown": current_plot_defaults["speed_pendown"],
+        "speed_penup": current_plot_defaults["speed_penup"],
+        "pen_pos_down": original.get("pen_pos_down", 35),
+        "pen_pos_up": original.get("pen_pos_up", 65),
+    }
+    auto_dip = bool(original.get("auto_dip_enabled"))
+    dip_interval_s = original.get("dip_interval_s")
+    well_settings = current_ink_well_settings()
+    well_snapshot = None
+    rerun_home = None
+    if auto_dip and not well_settings.get("installed"):
+        raise HTTPException(status_code=409, detail="The ink well must be tested and installed before rerunning this dip job")
+    if well_settings.get("installed"):
+        try:
+            well_snapshot = ink_well_plot_snapshot(well_settings)
+            rerun_home = current_home_position()
+        except (ValueError, HTTPException) as exc:
+            detail = exc.detail if isinstance(exc, HTTPException) else str(exc)
+            raise HTTPException(status_code=409, detail=detail) from exc
 
     new_layers = []
 
@@ -1881,6 +2863,7 @@ def rerun_job(
         old_input = Path(layer["input_svg"])
         new_input = layer_dir / "input.svg"
         new_progress = layer_dir / "progress.svg"
+        new_digest = layer_dir / "plot_digest.svg"
 
         if not old_input.exists():
             raise HTTPException(
@@ -1890,21 +2873,36 @@ def rerun_job(
 
         shutil.copy(old_input, new_input)
 
-        new_layers.append(
-            {
-                "index": idx,
-                "name": layer["name"],
-                "original_filename": layer.get(
-                    "original_filename",
-                    f"layer_{idx:02d}.svg",
-                ),
-                "input_svg": str(new_input),
-                "progress_svg": str(new_progress),
-            }
-        )
+        new_layer = {
+            "index": idx,
+            "name": layer["name"],
+            "original_filename": layer.get(
+                "original_filename",
+                f"layer_{idx:02d}.svg",
+            ),
+            "input_svg": str(new_input),
+            "progress_svg": str(new_progress),
+            "svg_metrics": validate_svg_file(new_input),
+        }
+        if well_snapshot is not None:
+            try:
+                analysis = analyse_layer_for_ink_well(
+                    new_input,
+                    new_digest,
+                    job_settings=rerun_settings,
+                    home=rerun_home,
+                    well=well_snapshot,
+                    dip_interval_s=dip_interval_s if auto_dip else None,
+                )
+                new_layer["plot_digest_svg"] = str(new_digest)
+                new_layer["ink_analysis"] = analysis
+                if auto_dip:
+                    prepare_auto_dip_layer(new_layer, analysis)
+            except ValueError as exc:
+                raise HTTPException(status_code=400, detail=str(exc)) from exc
+        new_layers.append(new_layer)
 
     log_path = LOGS_DIR / f"{new_job_id}.log"
-    current_plot_defaults = current_plot_settings()
 
     new_job = {
         "id": new_job_id,
@@ -1922,6 +2920,11 @@ def rerun_job(
         "pen_rate_raise": current_plot_defaults["pen_rate_raise"],
         "pen_pos_down": original.get("pen_pos_down", 35),
         "pen_pos_up": original.get("pen_pos_up", 65),
+        "ink_well": well_snapshot,
+        "auto_dip_enabled": auto_dip,
+        "dip_interval_s": dip_interval_s if auto_dip else None,
+        "dip_count": 0,
+        "dip_failure": None,
         "current_layer": None,
         "current_layer_name": None,
         "last_completed_layer": None,
@@ -1986,15 +2989,33 @@ def plotter_pen(
     if position not in {"up", "down"}:
         raise HTTPException(status_code=400, detail="position must be 'up' or 'down'")
 
-    extra = []
+    saved_pen_settings = current_pen_settings()
     if "pen_pos_down" in payload:
         payload["pen_pos_down"] = validate_pen_position(payload["pen_pos_down"], "pen_pos_down")
-        extra.extend(["--pen_pos_down", str(payload["pen_pos_down"])])
     if "pen_pos_up" in payload:
         payload["pen_pos_up"] = validate_pen_position(payload["pen_pos_up"], "pen_pos_up")
-        extra.extend(["--pen_pos_up", str(payload["pen_pos_up"])])
+    up_pos = int(payload.get("pen_pos_up", saved_pen_settings["pen_pos_up"]))
+    down_pos = int(payload.get("pen_pos_down", saved_pen_settings["pen_pos_down"]))
+    plot_defaults = current_plot_settings()
 
-    result = run_manual_command("raise_pen" if position == "up" else "lower_pen", extra)
+    require_hardware_idle()
+    try:
+        with hardware_lock:
+            with serial.Serial(PLOTTER_PORT, timeout=2) as port:
+                result = _run_pen_servo_on_port_locked(
+                    port,
+                    raised=position == "up",
+                    up_pos=up_pos,
+                    down_pos=down_pos,
+                    raise_rate=plot_defaults.get("pen_rate_raise", DEFAULT_PEN_RATE_RAISE),
+                    lower_rate=DEFAULT_PEN_RATE_LOWER,
+                    delay_up_ms=plot_defaults.get("pen_delay_up", DEFAULT_PEN_DELAY_UP),
+                    delay_down_ms=plot_defaults.get("pen_delay_down", DEFAULT_PEN_DELAY_DOWN),
+                )
+    except serial.SerialException as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+    except RuntimeError as exc:
+        raise HTTPException(status_code=500, detail=repr(exc)) from exc
 
     if result["ok"] and ("pen_pos_down" in payload or "pen_pos_up" in payload):
         with pen_settings_lock:
@@ -2004,6 +3025,8 @@ def plotter_pen(
                 pen_settings["pen_pos_up"] = int(payload["pen_pos_up"])
             save_pen_settings_unlocked()
             result["pen_settings"] = dict(pen_settings)
+    else:
+        result["pen_settings"] = saved_pen_settings
 
     return result
 
@@ -2051,6 +3074,168 @@ def plotter_plot_settings(
         return {"ok": True, "plot_settings": dict(plot_settings)}
 
 
+@app.get("/plotter/ink_well")
+def plotter_ink_well(
+    request: Request,
+    x_plotter_token: Optional[str] = Header(default=None),
+):
+    require_localhost(request)
+    check_token(x_plotter_token)
+    return {"ink_well": current_ink_well_settings()}
+
+
+@app.post("/plotter/ink_well")
+def plotter_ink_well_update(
+    request: Request,
+    payload: dict = Body(...),
+    x_plotter_token: Optional[str] = Header(default=None),
+):
+    require_localhost(request)
+    check_token(x_plotter_token)
+
+    editable = {
+        "centre",
+        "radius_mm",
+        "clearance_pos",
+        "dip_pos",
+        "dwell_ms",
+        "drip_dwell_ms",
+        "dip_circle_count",
+        "dip_circle_diameter_mm",
+        "installed",
+    }
+    unknown = set(payload) - editable - {"centre_from_current"}
+    if unknown:
+        raise HTTPException(status_code=400, detail=f"Unknown ink well fields: {', '.join(sorted(unknown))}")
+
+    with ink_well_settings_lock:
+        candidate = current_ink_well_settings()
+        if payload.get("centre_from_current"):
+            candidate["centre"] = current_software_position()
+        for key in editable:
+            if key in payload:
+                candidate[key] = payload[key]
+
+        calibration_keys = {
+            "centre",
+            "radius_mm",
+            "clearance_pos",
+            "dip_pos",
+            "dwell_ms",
+            "drip_dwell_ms",
+            "dip_circle_count",
+            "dip_circle_diameter_mm",
+        }
+        calibration_changed = any(
+            candidate.get(key) != ink_well_settings.get(key)
+            for key in calibration_keys
+        )
+        if calibration_changed:
+            candidate["test_passed"] = False
+            candidate["tested_at"] = None
+            candidate["installed"] = False
+
+        try:
+            validate_ink_well_settings(
+                candidate,
+                require_ready=bool(candidate.get("installed")),
+            )
+        except (ValueError, HTTPException) as exc:
+            detail = exc.detail if isinstance(exc, HTTPException) else str(exc)
+            raise HTTPException(status_code=400, detail=detail) from exc
+
+        ink_well_settings.clear()
+        ink_well_settings.update(candidate)
+        save_ink_well_settings_unlocked()
+        return {
+            "ok": True,
+            "ink_well": current_ink_well_settings(),
+            "test_required": not bool(ink_well_settings.get("test_passed")),
+        }
+
+
+@app.post("/plotter/ink_well/test")
+def plotter_ink_well_test(
+    request: Request,
+    x_plotter_token: Optional[str] = Header(default=None),
+):
+    require_localhost(request)
+    check_token(x_plotter_token)
+    require_hardware_idle()
+    require_software_position()
+
+    settings = current_ink_well_settings()
+    try:
+        validate_ink_well_settings(settings, require_ready=False)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    missing = [
+        key
+        for key in ("centre", "radius_mm", "clearance_pos", "dip_pos")
+        if settings.get(key) is None
+    ]
+    if missing:
+        raise HTTPException(status_code=400, detail=f"Ink well setup is incomplete: {', '.join(missing)}")
+
+    test_job = {
+        "id": "__ink_well_test__",
+        "auto_dip_enabled": True,
+        "ink_well": ink_well_plot_snapshot({**settings, "test_passed": True}),
+    }
+    test_log_path = LOGS_DIR / "ink-well-test.log"
+    try:
+        with test_log_path.open("a", encoding="utf-8", errors="replace") as log:
+            log.write(f"\nInk well test at {now():.3f}\n")
+            result = execute_dip_cycle(test_job, log)
+    except Exception as exc:
+        with test_log_path.open("a", encoding="utf-8", errors="replace") as log:
+            attempt_dip_clearance_raise(test_job, log)
+        raise HTTPException(
+            status_code=500,
+            detail={"message": "Ink well test failed", "error": repr(exc)},
+        ) from exc
+
+    with ink_well_settings_lock:
+        ink_well_settings["test_passed"] = False
+        ink_well_settings["tested_at"] = now()
+        ink_well_settings["installed"] = False
+        save_ink_well_settings_unlocked()
+        saved = current_ink_well_settings()
+    return {
+        "ok": True,
+        "message": "Ink well test cycle finished. Confirm it passed only if the nib touched fluid cleanly.",
+        "result": result,
+        "ink_well": saved,
+        "log_path": str(test_log_path),
+    }
+
+
+@app.post("/plotter/ink_well/confirm_test")
+def plotter_ink_well_confirm_test(
+    request: Request,
+    x_plotter_token: Optional[str] = Header(default=None),
+):
+    require_localhost(request)
+    check_token(x_plotter_token)
+
+    with ink_well_settings_lock:
+        candidate = current_ink_well_settings()
+        try:
+            validate_ink_well_settings({**candidate, "test_passed": True}, require_ready=True)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        if candidate.get("tested_at") is None:
+            raise HTTPException(status_code=400, detail="Run the ink well test cycle before confirming it passed")
+        ink_well_settings["test_passed"] = True
+        save_ink_well_settings_unlocked()
+        saved = current_ink_well_settings()
+    return {
+        "ok": True,
+        "message": "Ink well test confirmed. You can now mark the well installed.",
+        "ink_well": saved,
+    }
+
+
 @app.post("/plotter/motors")
 def plotter_motors(
     request: Request,
@@ -2062,6 +3247,7 @@ def plotter_motors(
 
     enabled = bool(payload.get("enabled"))
     result = run_manual_command("enable_xy" if enabled else "disable_xy")
+    invalidate_motor_resolution_cache()
     with position_lock:
         invalidate_position_reference_unlocked()
     result["position_invalidated"] = True
@@ -2307,20 +3493,20 @@ def plotter_jog(
         raise HTTPException(status_code=400, detail="Jog distance must be <= 50 mm per command")
 
     current = current_software_position()
-    validate_bed_target(current["x_mm"] + x_mm, current["y_mm"] + y_mm)
+    target_x, target_y = validate_bed_target(current["x_mm"] + x_mm, current["y_mm"] + y_mm)
 
     raw_delta = bed_delta_to_raw_delta(x_mm, y_mm)
     axis_1, axis_2 = xy_mm_to_steps(raw_delta["x_mm"], raw_delta["y_mm"])
     distance = (x_mm * x_mm + y_mm * y_mm) ** 0.5
     duration_ms = max(40, int(round(distance / speed_mm_s * 1000)))
+    mark_manual_hardware_priority(duration_ms / 1000.0 + MANUAL_HARDWARE_PRIORITY_GRACE_S)
 
     with hardware_lock:
         try:
             with serial.Serial(PLOTTER_PORT, timeout=2) as port:
-                require_enabled_high_resolution_motors(port)
+                require_cached_high_resolution_motors(port)
                 move_response = raw_command(port, f"SM,{duration_ms},{axis_1},{axis_2}\r")
                 wait_for_motion_idle(port, max(2.0, duration_ms / 1000.0 + 1.0))
-                _axis_1_now, _axis_2_now, raw_current = read_step_position(port)
         except serial.SerialException as exc:
             raise HTTPException(status_code=500, detail=str(exc)) from exc
         except TimeoutError as exc:
@@ -2335,18 +3521,15 @@ def plotter_jog(
         )
 
     with position_lock:
-        actual = current_position_estimate(raw_current)
-        if actual is not None:
-            set_current_position_unlocked(actual["x_mm"], actual["y_mm"])
-            save_position_offset_unlocked()
-            current = dict(position_current)
-        else:
-            current = None
+        set_current_position_unlocked(target_x, target_y)
+        save_position_offset_unlocked()
+        current = dict(position_current)
 
     return {
         "ok": True,
         "x_mm": x_mm,
         "y_mm": y_mm,
+        "target": {"x_mm": target_x, "y_mm": target_y},
         "raw_delta_mm": raw_delta,
         "position_estimate": current,
         "axis_1_steps": axis_1,
