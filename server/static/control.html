@@ -876,6 +876,12 @@
   <script>
     try {
       (new Image()).src = "/control/config?startup_probe=1";
+      window.onerror = function (message, source, lineno, colno) {
+        (new Image()).src = "/control/config?startup_error="
+          + encodeURIComponent(String(message))
+          + "&line=" + encodeURIComponent(String(lineno || ""))
+          + "&col=" + encodeURIComponent(String(colno || ""));
+      };
     } catch (_error) {}
   </script>
   <script>
