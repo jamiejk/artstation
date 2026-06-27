@@ -634,13 +634,13 @@
             <div class="pen-control">
               <label for="penUpValue">Pen up</label>
               <button id="penUpMinus" title="Lower the pen-up servo value by 5">-</button>
-              <input id="penUpValue" type="number" min="0" max="100" step="1" value="65">
+              <input id="penUpValue" type="number" min="-20" max="120" step="1" value="65">
               <button id="penUpPlus" title="Raise the pen-up servo value by 5">+</button>
             </div>
             <div class="pen-control">
               <label for="penDownValue">Pen down</label>
               <button id="penDownMinus" title="Lower the pen-down servo value by 5">-</button>
-              <input id="penDownValue" type="number" min="0" max="100" step="1" value="35">
+              <input id="penDownValue" type="number" min="-20" max="120" step="1" value="35">
               <button id="penDownPlus" title="Raise the pen-down servo value by 5">+</button>
             </div>
           </div>
@@ -706,11 +706,11 @@
             </div>
             <div class="pen-control">
               <label for="wellClearance">Clearance servo</label>
-              <span></span><input id="wellClearance" type="number" min="0" max="100" step="1" value="80"><span></span>
+              <span></span><input id="wellClearance" type="number" min="-20" max="120" step="1" value="80"><span></span>
             </div>
             <div class="pen-control">
               <label for="wellDip">Dip servo</label>
-              <span></span><input id="wellDip" type="number" min="0" max="100" step="1" value="20"><span></span>
+              <span></span><input id="wellDip" type="number" min="-20" max="120" step="1" value="20"><span></span>
             </div>
             <div class="pen-control">
               <label for="wellDwell">Ink dwell (ms)</label>
@@ -1011,15 +1011,15 @@
     function penPayload(position) {
       return {
         position,
-        pen_pos_up: clamp(inputNumber("penUpValue", 65), 0, 100),
-        pen_pos_down: clamp(inputNumber("penDownValue", 35), 0, 100),
+        pen_pos_up: clamp(inputNumber("penUpValue", 65), -20, 120),
+        pen_pos_down: clamp(inputNumber("penDownValue", 35), -20, 120),
       };
     }
 
     function penSettingsPayload() {
       return {
-        pen_pos_up: clamp(inputNumber("penUpValue", 65), 0, 100),
-        pen_pos_down: clamp(inputNumber("penDownValue", 35), 0, 100),
+        pen_pos_up: clamp(inputNumber("penUpValue", 65), -20, 120),
+        pen_pos_down: clamp(inputNumber("penDownValue", 35), -20, 120),
       };
     }
 
@@ -1038,8 +1038,8 @@
     function inkWellPayload() {
       return {
         radius_mm: clamp(inputNumber("wellRadius", 25), 1, 250),
-        clearance_pos: clamp(inputNumber("wellClearance", 80), 0, 100),
-        dip_pos: clamp(inputNumber("wellDip", 20), 0, 100),
+        clearance_pos: clamp(inputNumber("wellClearance", 80), -20, 120),
+        dip_pos: clamp(inputNumber("wellDip", 20), -20, 120),
         dwell_ms: clamp(inputNumber("wellDwell", 1000), 0, 30000),
         dip_circle_count: clamp(inputNumber("wellDipCircleCount", 3), 0, 10),
         dip_circle_diameter_mm: clamp(inputNumber("wellDipCircleDiameter", 10), 0, 50),
@@ -1263,8 +1263,6 @@
     async function sendPen(position) {
       const payload = penPayload(position);
       await post("/plotter/pen", payload);
-      storageSet("plotterPenUp", String(payload.pen_pos_up));
-      storageSet("plotterPenDown", String(payload.pen_pos_down));
       setMessage(`Pen ${position}: up=${payload.pen_pos_up}, down=${payload.pen_pos_down}`);
       await refresh();
       window.setTimeout(refresh, 500);
@@ -1275,8 +1273,6 @@
       $("penUpValue").value = String(payload.pen_pos_up);
       $("penDownValue").value = String(payload.pen_pos_down);
       await post("/plotter/pen_settings", payload);
-      storageSet("plotterPenUp", String(payload.pen_pos_up));
-      storageSet("plotterPenDown", String(payload.pen_pos_down));
       if (state.config) {
         state.config.pen_pos_up = payload.pen_pos_up;
         state.config.pen_pos_down = payload.pen_pos_down;
@@ -1286,7 +1282,7 @@
 
     function adjustPenValue(inputId, delta, position) {
       const input = $(inputId);
-      input.value = String(clamp(Number(input.value || 0) + delta, 0, 100));
+      input.value = String(clamp(Number(input.value || 0) + delta, -20, 120));
       setMessage(`Moving pen ${position}…`);
       sendPen(position).catch((error) => setMessage(error.message));
     }
@@ -1326,8 +1322,8 @@
           const config = response.text ? JSON.parse(response.text) : {};
           state.config = config;
           state.token = config.token || state.token;
-          $("penUpValue").value = storageGet("plotterPenUp") || config.pen_pos_up || $("penUpValue").value;
-          $("penDownValue").value = storageGet("plotterPenDown") || config.pen_pos_down || $("penDownValue").value;
+          $("penUpValue").value = config.pen_pos_up != null ? config.pen_pos_up : $("penUpValue").value;
+          $("penDownValue").value = config.pen_pos_down != null ? config.pen_pos_down : $("penDownValue").value;
           $("plotDownSpeed").value = storageGet("plotSpeedPendown") || config.speed_pendown || $("plotDownSpeed").value;
           $("plotUpSpeed").value = storageGet("plotSpeedPenup") || config.speed_penup || $("plotUpSpeed").value;
           const storedPenDelayDown = storageGet("plotPenDelayDown", null);

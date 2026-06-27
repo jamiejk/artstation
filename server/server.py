@@ -80,6 +80,8 @@ home_position: dict | None = None
 position_calibration_id = uuid.uuid4().hex
 pen_settings_lock = threading.RLock()
 pen_settings = {"pen_pos_up": 65, "pen_pos_down": 35}
+SERVO_POSITION_MIN = int(os.environ.get("PLOTTER_SERVO_POSITION_MIN", "-20"))
+SERVO_POSITION_MAX = int(os.environ.get("PLOTTER_SERVO_POSITION_MAX", "120"))
 plot_settings_lock = threading.RLock()
 plot_settings = {
     "speed_pendown": 15,
@@ -567,10 +569,10 @@ def validate_ink_well_settings(settings: dict, *, require_ready: bool = False) -
     for key in ("clearance_pos", "dip_pos"):
         value = settings.get(key)
         if value is not None:
-            value = int(value)
-            if not 0 <= value <= 100:
-                raise ValueError(f"{key} must be between 0 and 100")
-            settings[key] = value
+            try:
+                settings[key] = validate_pen_position(value, key)
+            except HTTPException as exc:
+                raise ValueError(str(exc.detail)) from exc
 
     for key, maximum in (("dwell_ms", 30000), ("drip_dwell_ms", 30000)):
         value = int(settings.get(key, 0))
@@ -642,8 +644,11 @@ def validate_speed_setting(value: int, name: str) -> int:
 
 def validate_pen_position(value: int, name: str) -> int:
     value = int(value)
-    if not 0 <= value <= 100:
-        raise HTTPException(status_code=400, detail=f"{name} must be between 0 and 100")
+    if not SERVO_POSITION_MIN <= value <= SERVO_POSITION_MAX:
+        raise HTTPException(
+            status_code=400,
+            detail=f"{name} must be between {SERVO_POSITION_MIN} and {SERVO_POSITION_MAX}",
+        )
     return value
 
 
