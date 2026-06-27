@@ -946,7 +946,10 @@ def apply_paper_alignment_to_job(job: dict) -> None:
 
 
 def job_plot_start_position(job: dict) -> dict:
-    start = job.get("plot_start_position")
+    try:
+        start = current_home_position()
+    except HTTPException:
+        start = job.get("plot_start_position")
     if not isinstance(start, dict):
         start = current_home_position()
 
