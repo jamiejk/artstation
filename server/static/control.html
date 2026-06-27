@@ -925,6 +925,16 @@
       $("message").textContent = text;
     }
 
+    function setStartupMessage(text) {
+      try {
+        setMessage(text);
+      } catch (_error) {
+        // If even the message element is unavailable, the browser console will
+        // have the original exception. Keep startup failures visible when the
+        // DOM is available.
+      }
+    }
+
     function formatApiError(data, fallbackText = "") {
       const detail = data?.detail;
       if (typeof detail === "string") return detail;
@@ -958,11 +968,11 @@
 
     function escapeHtml(value) {
       return String(value ?? "")
-        .replaceAll("&", "&amp;")
-        .replaceAll("<", "&lt;")
-        .replaceAll(">", "&gt;")
-        .replaceAll('"', "&quot;")
-        .replaceAll("'", "&#39;");
+        .replace(/&/g, "&amp;")
+        .replace(/</g, "&lt;")
+        .replace(/>/g, "&gt;")
+        .replace(/"/g, "&quot;")
+        .replace(/'/g, "&#39;");
     }
 
     function formatTime(value) {
@@ -1256,6 +1266,7 @@
     }
 
     async function loadConfig() {
+      setStartupMessage("Loading control configuration…");
       try {
         const response = await fetch("/control/config");
         if (response.ok) {
@@ -2026,7 +2037,8 @@
       document.addEventListener("click", (event) => {
         const button = event.target.closest("[data-dip-interval-save]");
         if (!button) return;
-        const input = document.querySelector(`[data-dip-interval-input="${CSS.escape(button.dataset.jobId)}"]`);
+        const input = Array.from(document.querySelectorAll("[data-dip-interval-input]"))
+          .find((item) => item.dataset.dipIntervalInput === button.dataset.jobId);
         const interval = Number(input?.value || 0);
         withButtonFeedback(
           button,
@@ -2042,6 +2054,7 @@
     }
 
     async function main() {
+      setStartupMessage("Starting control page…");
       await loadConfig();
       bindControls();
       refresh();
