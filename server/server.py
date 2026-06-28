@@ -19,9 +19,11 @@ import serial
 try:
     from server import hardware
     from server import plot_execution
+    from server import state_store
 except ImportError:
     import hardware
     import plot_execution
+    import state_store
 
 try:
     from server.ink_dip import (
@@ -308,10 +310,10 @@ def now() -> float:
 
 def load_position_offset() -> None:
     global position_offset, position_current, home_position, position_calibration_id
-    if not POSITION_PATH.exists():
-        return
     try:
-        data = json.loads(POSITION_PATH.read_text(encoding="utf-8"))
+        data = state_store.read_json(POSITION_PATH)
+        if data is None:
+            return
         if data.get("state_version") != POSITION_STATE_VERSION:
             print("Ignoring legacy position state; recalibration is required", flush=True)
             return
@@ -352,7 +354,7 @@ def save_position_offset_unlocked() -> None:
         data["current_position"] = dict(position_current)
     if home_position is not None:
         data["home_position"] = dict(home_position)
-    POSITION_PATH.write_text(json.dumps(data, indent=2), encoding="utf-8")
+    state_store.write_json(POSITION_PATH, data)
 
 
 def renew_position_calibration_unlocked() -> None:
@@ -369,10 +371,10 @@ def load_pen_settings() -> None:
     with pen_settings_lock:
         pen_settings["pen_pos_up"] = DEFAULT_PEN_POS_UP
         pen_settings["pen_pos_down"] = DEFAULT_PEN_POS_DOWN
-        if not PEN_SETTINGS_PATH.exists():
-            return
         try:
-            data = json.loads(PEN_SETTINGS_PATH.read_text(encoding="utf-8"))
+            data = state_store.read_json(PEN_SETTINGS_PATH)
+            if data is None:
+                return
             pen_settings["pen_pos_up"] = int(data.get("pen_pos_up", pen_settings["pen_pos_up"]))
             pen_settings["pen_pos_down"] = int(data.get("pen_pos_down", pen_settings["pen_pos_down"]))
         except Exception as exc:
@@ -380,7 +382,7 @@ def load_pen_settings() -> None:
 
 
 def save_pen_settings_unlocked() -> None:
-    PEN_SETTINGS_PATH.write_text(json.dumps(pen_settings, indent=2), encoding="utf-8")
+    state_store.write_json(PEN_SETTINGS_PATH, pen_settings)
 
 
 def current_pen_settings() -> dict:
@@ -402,10 +404,10 @@ def load_plot_settings() -> None:
         plot_settings["pen_rate_raise"] = DEFAULT_PEN_RATE_RAISE
         plot_settings["auto_dip_enabled"] = False
         plot_settings["dip_interval_s"] = 60.0
-        if not PLOT_SETTINGS_PATH.exists():
-            return
         try:
-            data = json.loads(PLOT_SETTINGS_PATH.read_text(encoding="utf-8"))
+            data = state_store.read_json(PLOT_SETTINGS_PATH)
+            if data is None:
+                return
             plot_settings["speed_pendown"] = int(data.get("speed_pendown", plot_settings["speed_pendown"]))
             plot_settings["speed_penup"] = int(data.get("speed_penup", plot_settings["speed_penup"]))
             plot_settings["pen_delay_down"] = validate_pen_delay_down(
@@ -428,7 +430,7 @@ def load_plot_settings() -> None:
 
 
 def save_plot_settings_unlocked() -> None:
-    PLOT_SETTINGS_PATH.write_text(json.dumps(plot_settings, indent=2), encoding="utf-8")
+    state_store.write_json(PLOT_SETTINGS_PATH, plot_settings)
 
 
 def current_plot_settings() -> dict:
@@ -494,10 +496,10 @@ def load_paper_settings() -> None:
         )
         paper_settings.clear()
         paper_settings.update(defaults)
-        if not PAPER_SETTINGS_PATH.exists():
-            return
         try:
-            data = json.loads(PAPER_SETTINGS_PATH.read_text(encoding="utf-8"))
+            data = state_store.read_json(PAPER_SETTINGS_PATH)
+            if data is None:
+                return
             if data.get("state_version") != 1:
                 raise ValueError("unsupported state version")
             candidate = dict(defaults)
@@ -508,12 +510,12 @@ def load_paper_settings() -> None:
 
 
 def save_paper_settings_unlocked() -> None:
-    PAPER_SETTINGS_PATH.write_text(json.dumps(paper_settings, indent=2), encoding="utf-8")
+    state_store.write_json(PAPER_SETTINGS_PATH, paper_settings)
 
 
 def current_paper_settings() -> dict:
     with paper_settings_lock:
-        return json.loads(json.dumps(paper_settings))
+        return state_store.deep_copy_jsonable(paper_settings)
 
 
 def load_ink_well_settings() -> None:
@@ -535,10 +537,10 @@ def load_ink_well_settings() -> None:
         }
         ink_well_settings.clear()
         ink_well_settings.update(defaults)
-        if not INK_WELL_SETTINGS_PATH.exists():
-            return
         try:
-            data = json.loads(INK_WELL_SETTINGS_PATH.read_text(encoding="utf-8"))
+            data = state_store.read_json(INK_WELL_SETTINGS_PATH)
+            if data is None:
+                return
             if data.get("state_version") != 1:
                 raise ValueError("unsupported state version")
             candidate = dict(defaults)
@@ -550,12 +552,12 @@ def load_ink_well_settings() -> None:
 
 
 def save_ink_well_settings_unlocked() -> None:
-    INK_WELL_SETTINGS_PATH.write_text(json.dumps(ink_well_settings, indent=2), encoding="utf-8")
+    state_store.write_json(INK_WELL_SETTINGS_PATH, ink_well_settings)
 
 
 def current_ink_well_settings() -> dict:
     with ink_well_settings_lock:
-        return json.loads(json.dumps(ink_well_settings))
+        return state_store.deep_copy_jsonable(ink_well_settings)
 
 
 def validate_ink_well_settings(settings: dict, *, require_ready: bool = False) -> dict:
@@ -804,23 +806,17 @@ def current_software_position() -> dict:
 
 
 def job_dir(job_id: str) -> Path:
-    return JOBS_DIR / job_id
+    return state_store.job_dir(JOBS_DIR, job_id)
 
 
 def job_meta_path(job_id: str) -> Path:
-    return job_dir(job_id) / "job.json"
+    return state_store.job_meta_path(JOBS_DIR, job_id)
 
 
 def save_job_unlocked(job_id: str) -> None:
     if job_id not in jobs:
         return
-
-    path = job_meta_path(job_id)
-    path.parent.mkdir(parents=True, exist_ok=True)
-
-    tmp = path.with_suffix(".json.tmp")
-    tmp.write_text(json.dumps(jobs[job_id], indent=2), encoding="utf-8")
-    tmp.replace(path)
+    state_store.save_job(JOBS_DIR, job_id, jobs[job_id])
 
 
 def load_jobs() -> None:
@@ -831,10 +827,9 @@ def load_jobs() -> None:
     We mark it interrupted and let you rerun deliberately.
     """
     with jobs_lock:
-        for path in JOBS_DIR.glob("*/job.json"):
+        for path in state_store.iter_job_meta_paths(JOBS_DIR):
             try:
-                job = json.loads(path.read_text(encoding="utf-8"))
-                job_id = job.get("id") or path.parent.name
+                job_id, job = state_store.read_job_meta(path)
 
                 if job.get("status") in {
                     "queued",
@@ -881,10 +876,7 @@ def update_job(job_id: str, **fields) -> None:
 
 
 def log_tail(path: Path, max_chars: int = 4000) -> str:
-    if not path.exists():
-        return ""
-
-    return path.read_text(encoding="utf-8", errors="replace")[-max_chars:]
+    return state_store.log_tail(path, max_chars=max_chars)
 
 
 def active_running_job_unlocked() -> dict | None:

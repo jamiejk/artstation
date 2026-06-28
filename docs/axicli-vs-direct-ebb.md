@@ -47,6 +47,10 @@ construction, one-layer plot/resume execution, digest generation, keep-out
 analysis, auto-dip checkpoint SVG preparation, and stable progress-file
 replacement. Job queue state and operator decisions remain in `server.py`.
 
+Runtime JSON persistence lives in `server/state_store.py`: atomic JSON writes,
+runtime JSON reads, job metadata paths, and log-tail reads. Validation and
+state-transition rules remain in `server.py`.
+
 ## What the direct layer must preserve
 
 The direct layer is deliberately narrow. It must preserve:
