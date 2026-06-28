@@ -80,8 +80,8 @@ home_position: dict | None = None
 position_calibration_id = uuid.uuid4().hex
 pen_settings_lock = threading.RLock()
 pen_settings = {"pen_pos_up": 65, "pen_pos_down": 35}
-SERVO_POSITION_MIN = int(os.environ.get("PLOTTER_SERVO_POSITION_MIN", "-20"))
-SERVO_POSITION_MAX = int(os.environ.get("PLOTTER_SERVO_POSITION_MAX", "120"))
+AXIDRAW_PEN_POSITION_MIN = 0
+AXIDRAW_PEN_POSITION_MAX = 100
 plot_settings_lock = threading.RLock()
 plot_settings = {
     "speed_pendown": 15,
@@ -644,10 +644,10 @@ def validate_speed_setting(value: int, name: str) -> int:
 
 def validate_pen_position(value: int, name: str) -> int:
     value = int(value)
-    if not SERVO_POSITION_MIN <= value <= SERVO_POSITION_MAX:
+    if not AXIDRAW_PEN_POSITION_MIN <= value <= AXIDRAW_PEN_POSITION_MAX:
         raise HTTPException(
             status_code=400,
-            detail=f"{name} must be between {SERVO_POSITION_MIN} and {SERVO_POSITION_MAX}",
+            detail=f"{name} must be between {AXIDRAW_PEN_POSITION_MIN} and {AXIDRAW_PEN_POSITION_MAX}",
         )
     return value
 
@@ -3533,28 +3533,15 @@ def plotter_pen(
     require_hardware_idle()
     try:
         with hardware_lock:
-            try:
-                result = run_axicli_pen_manual(
-                    raised=position == "up",
-                    up_pos=up_pos,
-                    down_pos=down_pos,
-                    raise_rate=plot_defaults.get("pen_rate_raise", DEFAULT_PEN_RATE_RAISE),
-                    lower_rate=DEFAULT_PEN_RATE_LOWER,
-                    delay_up_ms=plot_defaults.get("pen_delay_up", DEFAULT_PEN_DELAY_UP),
-                    delay_down_ms=plot_defaults.get("pen_delay_down", DEFAULT_PEN_DELAY_DOWN),
-                )
-            except ValueError:
-                with serial.Serial(PLOTTER_PORT, timeout=2) as port:
-                    result = _run_pen_servo_on_port_locked(
-                        port,
-                        raised=position == "up",
-                        up_pos=up_pos,
-                        down_pos=down_pos,
-                        raise_rate=plot_defaults.get("pen_rate_raise", DEFAULT_PEN_RATE_RAISE),
-                        lower_rate=DEFAULT_PEN_RATE_LOWER,
-                        delay_up_ms=plot_defaults.get("pen_delay_up", DEFAULT_PEN_DELAY_UP),
-                        delay_down_ms=plot_defaults.get("pen_delay_down", DEFAULT_PEN_DELAY_DOWN),
-                    )
+            result = run_axicli_pen_manual(
+                raised=position == "up",
+                up_pos=up_pos,
+                down_pos=down_pos,
+                raise_rate=plot_defaults.get("pen_rate_raise", DEFAULT_PEN_RATE_RAISE),
+                lower_rate=DEFAULT_PEN_RATE_LOWER,
+                delay_up_ms=plot_defaults.get("pen_delay_up", DEFAULT_PEN_DELAY_UP),
+                delay_down_ms=plot_defaults.get("pen_delay_down", DEFAULT_PEN_DELAY_DOWN),
+            )
     except serial.SerialException as exc:
         raise HTTPException(status_code=500, detail=str(exc)) from exc
     except RuntimeError as exc:

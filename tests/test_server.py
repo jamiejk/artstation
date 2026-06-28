@@ -205,9 +205,9 @@ class PaperSettingsTests(unittest.TestCase):
 
 class PlotSettingsTests(unittest.TestCase):
     def test_validates_pen_positions(self):
-        self.assertEqual(server.validate_pen_position(-20, "pen_pos_down"), -20)
-        self.assertEqual(server.validate_pen_position(120, "pen_pos_up"), 120)
-        for value in (-21, 121):
+        self.assertEqual(server.validate_pen_position(0, "pen_pos_down"), 0)
+        self.assertEqual(server.validate_pen_position(100, "pen_pos_up"), 100)
+        for value in (-1, 101):
             with self.subTest(value=value), self.assertRaises(HTTPException):
                 server.validate_pen_position(value, "pen_pos_down")
 
