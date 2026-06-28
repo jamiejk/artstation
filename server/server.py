@@ -884,6 +884,13 @@ def log_tail(path: Path, max_chars: int = 4000) -> str:
     return state_store.log_tail(path, max_chars=max_chars)
 
 
+def job_timing_summary(job: dict) -> dict:
+    log_path = job.get("log_path")
+    if not log_path:
+        return {}
+    return timing_log.summarize_timing_text(log_tail(Path(log_path), max_chars=120000), limit=6)
+
+
 def active_running_job_unlocked() -> dict | None:
     for job in jobs.values():
         if job.get("status") in RUNNING_STATUSES:
@@ -2632,6 +2639,7 @@ def list_jobs(
                     "paper": job.get("paper"),
                     "rerun_of": job.get("rerun_of"),
                     "log_path": job.get("log_path"),
+                    "timing_summary": job_timing_summary(job),
                 }
             )
 

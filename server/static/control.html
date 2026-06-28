@@ -508,15 +508,21 @@
     }
 
     .job-card .job-layer,
-    .job-card .job-meta {
+    .job-card .job-meta,
+    .job-card .job-timing {
       color: var(--muted);
       font-size: 12px;
       overflow-wrap: anywhere;
     }
 
     .job-card .job-layer,
-    .job-card .job-meta {
+    .job-card .job-meta,
+    .job-card .job-timing {
       grid-column: 1 / -1;
+    }
+
+    .job-card .job-timing {
+      color: #4b5563;
     }
 
     .job-controls {
@@ -1457,6 +1463,42 @@
       )).join("");
     }
 
+    function formatMs(ms) {
+      const value = Number(ms);
+      if (!Number.isFinite(value)) return "-";
+      return value >= 1000 ? `${(value / 1000).toFixed(2)}s` : `${value.toFixed(0)}ms`;
+    }
+
+    function timingLabel(eventName) {
+      const labels = {
+        axicli_layer_plot: "AxiCLI plot",
+        axicli_layer_resume: "AxiCLI resume",
+        auto_dip_checkpoint_round_trip: "checkpoint dip",
+        auto_dip_phase_complete: "dip phase",
+        auto_dip_plot_segment: "plot segment",
+        auto_dip_resume_after_checkpoint: "resume after dip",
+        dip_clearance_raise: "dip raise",
+        dip_cycle_total: "dip total",
+        dip_load_pen: "load pen",
+        dip_raise_after_load: "raise after load",
+        dip_return_to_plot: "return to plot",
+        dip_travel_to_well: "travel to well",
+        layer_plot_result: "plot result",
+        layer_resume_result: "resume result",
+      };
+      return labels[eventName] || eventName || "-";
+    }
+
+    function jobTimingLine(job) {
+      const summary = job.timing_summary || {};
+      const slowest = Array.isArray(summary.slowest) ? summary.slowest : [];
+      if (!slowest.length) return "";
+      const items = slowest.slice(0, 3).map((event) => (
+        `${timingLabel(event.event)} ${formatMs(event.elapsed_ms)}`
+      ));
+      return `<div class="job-timing">Slowest timings: ${escapeHtml(items.join(" · "))}</div>`;
+    }
+
     function jobCard(job) {
       const status = job.status || "-";
       const layer = job.current_layer_name || `Layer ${job.current_layer || job.last_completed_layer || "-"}`;
@@ -1483,6 +1525,7 @@
           <div class="status-pill ${escapeHtml(status)}">${escapeHtml(status)}</div>
           <div class="job-layer">${escapeHtml(layer)}</div>
           <div class="job-meta">Created ${escapeHtml(created)} · ${escapeHtml(job.layer_count || "-")} layer(s) · ${escapeHtml(speed)} · ${escapeHtml(pen)}${escapeHtml(dip)}${escapeHtml(origin)}${escapeHtml(originWarning)}${escapeHtml(message)}</div>
+          ${jobTimingLine(job)}
           ${recovery}
         </div>
       `;
