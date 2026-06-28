@@ -1999,12 +1999,9 @@ def return_home(log) -> int:
     """
     Return to the start/home position after a layer.
 
-    This uses AxiDraw's manual walk_home command. It assumes the plotter's
-    start/home position was set correctly at the beginning of the job.
+    This uses the direct EBB motion path so job cleanup follows the same
+    calibrated bed-coordinate model as browser Home and ink-well movement.
     """
-    raise_cmd = manual_command_cmd("raise_pen")
-    home_cmd = manual_command_cmd("walk_home")
-
     with position_lock:
         home = dict(home_position) if home_position is not None else None
     if home is None:
@@ -2017,56 +2014,38 @@ def return_home(log) -> int:
 
     with hardware_lock:
         try:
-            with serial.Serial(PLOTTER_PORT, timeout=1) as port:
+            with serial.Serial(PLOTTER_PORT, timeout=2) as port:
+                require_cached_high_resolution_motors(port)
                 pen_up, pen_ack = serial_query(port, "QP\r")
-        except serial.SerialException as exc:
-            log.write(f"Could not check pen state before homing: {exc}\n")
-            log.flush()
-            return 1
 
-        log.write(f"Pen state before homing: {'up' if pen_up == '1' else 'down'}")
-        if pen_ack:
-            log.write(f" ({pen_ack})")
-        log.write("\n")
+                log.write(f"Pen state before homing: {'up' if pen_up == '1' else 'down'}")
+                if pen_ack:
+                    log.write(f" ({pen_ack})")
+                log.write("\n")
 
-        if pen_up != "1":
-            log.write("Raising pen before homing:\n")
-            log.write(" ".join(raise_cmd) + "\n")
-            log.flush()
-            raise_proc = subprocess.run(
-                raise_cmd,
-                stdout=log,
-                stderr=subprocess.STDOUT,
-                text=True,
-            )
-            if raise_proc.returncode != 0:
-                return raise_proc.returncode
+                if pen_up != "1":
+                    pen_defaults = current_pen_settings()
+                    plot_defaults = current_plot_settings()
+                    _run_pen_servo_on_port_locked(
+                        port,
+                        raised=True,
+                        up_pos=pen_defaults["pen_pos_up"],
+                        down_pos=pen_defaults["pen_pos_down"],
+                        raise_rate=plot_defaults.get("pen_rate_raise", DEFAULT_PEN_RATE_RAISE),
+                        lower_rate=DEFAULT_PEN_RATE_LOWER,
+                        delay_up_ms=plot_defaults.get("pen_delay_up", DEFAULT_PEN_DELAY_UP),
+                        delay_down_ms=plot_defaults.get("pen_delay_down", DEFAULT_PEN_DELAY_DOWN),
+                        label="Raise pen before homing",
+                        log=log,
+                    )
 
-        log.write(" ".join(home_cmd) + "\n")
-        log.flush()
-        proc = subprocess.run(
-            home_cmd,
-            stdout=log,
-            stderr=subprocess.STDOUT,
-            text=True,
-        )
-        if proc.returncode == 0:
-            try:
-                with serial.Serial(PLOTTER_PORT, timeout=1) as port:
-                    _axis_1, _axis_2, raw_after = read_step_position(port)
-                actual = current_position_estimate(raw_after)
-            except (serial.SerialException, ValueError) as exc:
-                log.write(f"Could not verify home position: {exc}\n")
-                log.flush()
-                return 1
-            if actual is None:
-                log.write("Could not calculate position after returning home.\n")
-                log.flush()
-                return 1
+                actual = _move_to_bed_target_on_port_locked(
+                    port,
+                    home,
+                    speed_mm_s=min(SAFE_MANUAL_MAX_XY_SPEED_MM_S, 120.0),
+                    log=log,
+                )
             home_error_mm = math.hypot(actual["x_mm"] - home["x_mm"], actual["y_mm"] - home["y_mm"])
-            with position_lock:
-                set_current_position_unlocked(actual["x_mm"], actual["y_mm"])
-                save_position_offset_unlocked()
             if home_error_mm > 0.5:
                 log.write(
                     f"Home verification failed: expected {home}, actual {actual}, "
@@ -2074,7 +2053,11 @@ def return_home(log) -> int:
                 )
                 log.flush()
                 return 1
-        return proc.returncode
+        except (serial.SerialException, RuntimeError, ValueError) as exc:
+            log.write(f"Could not return home: {exc}\n")
+            log.flush()
+            return 1
+        return 0
 
 
 def run_layer(job: dict, layer: dict, log) -> str:
@@ -2129,6 +2112,17 @@ def run_layer(job: dict, layer: dict, log) -> str:
     return "failed"
 
 
+def resume_progress_output_path(progress_svg: Path) -> Path:
+    return progress_svg.with_name(f"{progress_svg.stem}.next{progress_svg.suffix}")
+
+
+def finalize_resume_progress(progress_svg: Path, resumed_svg: Path) -> bool:
+    if not resumed_svg.exists():
+        return False
+    resumed_svg.replace(progress_svg)
+    return True
+
+
 def resume_layer(job: dict, layer: dict, log) -> str:
     """
     Resume a layer from its AxiDraw progress SVG.
@@ -2142,7 +2136,8 @@ def resume_layer(job: dict, layer: dict, log) -> str:
     if not progress_svg.exists():
         raise FileNotFoundError(f"Progress SVG not found: {progress_svg}")
 
-    resumed_svg = progress_svg.with_name(f"{progress_svg.stem}_resumed_{int(now())}.svg")
+    resumed_svg = resume_progress_output_path(progress_svg)
+    resumed_svg.unlink(missing_ok=True)
     cmd = axicli_cmd() + [
         str(progress_svg),
         "--mode",
@@ -2174,10 +2169,7 @@ def resume_layer(job: dict, layer: dict, log) -> str:
     resume_log_start = Path(job["log_path"]).stat().st_size
 
     returncode = run_axicli_command(cmd, log, job_id=job["id"])
-    if resumed_svg.exists():
-        layer["progress_svg"] = str(resumed_svg)
-        with jobs_lock:
-            save_job_unlocked(job["id"])
+    finalize_resume_progress(progress_svg, resumed_svg)
 
     log.flush()
     text = Path(job["log_path"]).read_text(encoding="utf-8", errors="replace")[resume_log_start:]

@@ -26,6 +26,7 @@ Use direct serial commands for short operator actions where human-visible latenc
 - Jog and move-to commands.
 - Pen up/down from the control panel.
 - Browser **Home** return to the saved bed coordinate.
+- Automatic post-layer return to the saved Home coordinate.
 - Ink-well test/dip cycles, including servo raise/lower, travel to the well, pickup circles, and return.
 - Cached hardware telemetry and motor-state checks.
 
@@ -70,3 +71,8 @@ The direct layer stores local calibration state in runtime JSON files, not in Gi
 - `plotter_paper_settings.json`
 
 These files describe the local machine setup and should not be published as project defaults.
+
+Layer resume state is kept in each layer directory as a stable `progress.svg`.
+When an AxiDraw resume produces updated progress, the server writes it to
+`progress.next.svg` and then replaces `progress.svg`; it does not create a new
+timestamped progress file for every resume.

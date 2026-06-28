@@ -352,6 +352,47 @@ class PlotSettingsTests(unittest.TestCase):
         self.assertIn("no serial", result["direct_error"])
         axicli.assert_called_once()
 
+    def test_resume_progress_replaces_stable_progress_file(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            progress_svg = Path(tmpdir) / "progress.svg"
+            resumed_svg = server.resume_progress_output_path(progress_svg)
+            progress_svg.write_text("old", encoding="utf-8")
+            resumed_svg.write_text("new", encoding="utf-8")
+
+            changed = server.finalize_resume_progress(progress_svg, resumed_svg)
+
+            self.assertTrue(changed)
+            self.assertEqual(progress_svg.read_text(encoding="utf-8"), "new")
+            self.assertFalse(resumed_svg.exists())
+
+    def test_resume_progress_does_not_create_timestamped_files(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            progress_svg = Path(tmpdir) / "progress.svg"
+            log_path = Path(tmpdir) / "job.log"
+            progress_svg.write_text("old", encoding="utf-8")
+            log_path.write_text("", encoding="utf-8")
+            layer = {"index": 1, "name": "Layer", "progress_svg": str(progress_svg)}
+            job = {
+                "id": "job",
+                "log_path": str(log_path),
+                "speed_pendown": 10,
+                "speed_penup": 20,
+                "pen_pos_down": 0,
+                "pen_pos_up": 100,
+            }
+
+            def fake_axicli(_cmd, _log, *, job_id=None):
+                Path(server.resume_progress_output_path(progress_svg)).write_text("new", encoding="utf-8")
+                return 0
+
+            with mock.patch.object(server, "run_axicli_command", side_effect=fake_axicli):
+                result = server.resume_layer(job, layer, mock.Mock())
+
+            self.assertEqual(result, "done")
+            self.assertEqual(layer["progress_svg"], str(progress_svg))
+            self.assertEqual(progress_svg.read_text(encoding="utf-8"), "new")
+            self.assertEqual(list(Path(tmpdir).glob("*resumed*")), [])
+
 
 class HomePositionTests(unittest.TestCase):
     def setUp(self):
@@ -367,6 +408,51 @@ class HomePositionTests(unittest.TestCase):
 
         self.assertEqual(server.current_home_position(), {"x_mm": 0.0, "y_mm": server.BED_HEIGHT_MM})
         self.assertEqual(server.current_software_position(), {"x_mm": 125.0, "y_mm": 300.0})
+
+    def test_return_home_uses_direct_ebb_motion(self):
+        with server.position_lock:
+            server.set_home_position_unlocked(10, 20)
+        serial_port = object()
+
+        with (
+            mock.patch.object(server.serial, "Serial") as serial_cls,
+            mock.patch.object(server, "require_cached_high_resolution_motors") as resolution,
+            mock.patch.object(server, "serial_query", return_value=("1", "OK")) as query,
+            mock.patch.object(server, "_move_to_bed_target_on_port_locked", return_value={"x_mm": 10, "y_mm": 20}) as move,
+            mock.patch.object(server, "_run_pen_servo_on_port_locked") as pen,
+            mock.patch.object(server.subprocess, "run") as subprocess_run,
+        ):
+            serial_cls.return_value.__enter__.return_value = serial_port
+            result = server.return_home(mock.Mock())
+
+        self.assertEqual(result, 0)
+        resolution.assert_called_once_with(serial_port)
+        query.assert_called_once_with(serial_port, "QP\r")
+        move.assert_called_once()
+        self.assertIs(move.call_args.args[0], serial_port)
+        self.assertEqual(move.call_args.args[1], {"x_mm": 10.0, "y_mm": 20.0})
+        pen.assert_not_called()
+        subprocess_run.assert_not_called()
+
+    def test_return_home_raises_pen_directly_when_needed(self):
+        with server.position_lock:
+            server.set_home_position_unlocked(10, 20)
+        serial_port = object()
+
+        with (
+            mock.patch.object(server.serial, "Serial") as serial_cls,
+            mock.patch.object(server, "require_cached_high_resolution_motors"),
+            mock.patch.object(server, "serial_query", return_value=("0", "OK")),
+            mock.patch.object(server, "_run_pen_servo_on_port_locked", return_value={"ok": True}) as pen,
+            mock.patch.object(server, "_move_to_bed_target_on_port_locked", return_value={"x_mm": 10, "y_mm": 20}),
+        ):
+            serial_cls.return_value.__enter__.return_value = serial_port
+            result = server.return_home(mock.Mock())
+
+        self.assertEqual(result, 0)
+        pen.assert_called_once()
+        self.assertIs(pen.call_args.args[0], serial_port)
+        self.assertTrue(pen.call_args.kwargs["raised"])
 
     def test_user_can_replace_home_without_changing_current_position(self):
         with server.position_lock:
