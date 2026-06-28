@@ -31,6 +31,19 @@ class StateStoreTests(unittest.TestCase):
             self.assertEqual(job_id, "abc123")
             self.assertEqual(job["status"], "queued")
 
+    def test_delete_job_metadata_keeps_job_artifacts(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            jobs_dir = Path(tmpdir) / "jobs"
+            state_store.save_job(jobs_dir, "abc123", {"id": "abc123", "status": "done"})
+            artifact = state_store.job_dir(jobs_dir, "abc123") / "layer_01" / "plot.svg"
+            artifact.parent.mkdir(parents=True)
+            artifact.write_text("<svg/>", encoding="utf-8")
+
+            state_store.delete_job_metadata(jobs_dir, "abc123")
+
+            self.assertFalse(state_store.job_meta_path(jobs_dir, "abc123").exists())
+            self.assertTrue(artifact.exists())
+
     def test_log_tail_handles_missing_and_truncates(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             missing = Path(tmpdir) / "missing.log"

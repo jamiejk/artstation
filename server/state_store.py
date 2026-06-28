@@ -43,6 +43,10 @@ def save_job(jobs_dir: Path, job_id: str, job: dict) -> None:
     write_json(job_meta_path(jobs_dir, job_id), job, atomic=True)
 
 
+def delete_job_metadata(jobs_dir: Path, job_id: str) -> None:
+    job_meta_path(jobs_dir, job_id).unlink(missing_ok=True)
+
+
 def iter_job_meta_paths(jobs_dir: Path):
     yield from jobs_dir.glob("*/job.json")
 

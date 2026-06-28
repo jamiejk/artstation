@@ -512,6 +512,36 @@ class OperatorPromptTests(unittest.TestCase):
         server.jobs.pop("new-job", None)
 
 
+class JobClearTests(unittest.TestCase):
+    def test_clear_keep_files_deletes_metadata_so_jobs_do_not_reload(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            jobs_dir = Path(tmpdir) / "jobs"
+            artifact = server.state_store.job_dir(jobs_dir, "old-job") / "layer_01" / "plot.svg"
+            artifact.parent.mkdir(parents=True)
+            artifact.write_text("<svg/>", encoding="utf-8")
+            job = {
+                "id": "old-job",
+                "status": "paused",
+                "log_path": str(Path(tmpdir) / "old-job.log"),
+            }
+            server.state_store.save_job(jobs_dir, "old-job", job)
+
+            with mock.patch.object(server, "JOBS_DIR", jobs_dir):
+                server.jobs.clear()
+                server.jobs["old-job"] = dict(job)
+
+                result = server.clear_jobs({"keep_files": True}, x_plotter_token="test-token")
+                self.assertEqual(result["removed"], [{"id": "old-job", "status": "paused"}])
+                self.assertNotIn("old-job", server.jobs)
+                self.assertFalse(server.state_store.job_meta_path(jobs_dir, "old-job").exists())
+                self.assertTrue(artifact.exists())
+
+                server.load_jobs()
+                self.assertNotIn("old-job", server.jobs)
+
+        server.jobs.clear()
+
+
 class InkDipGeometryTests(unittest.TestCase):
     def test_parses_plob_points_as_millimetres(self):
         with tempfile.TemporaryDirectory() as directory:

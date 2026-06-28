@@ -2947,14 +2947,14 @@ def clear_jobs(
             removed.append({"id": job_id, "status": status})
             del jobs[job_id]
 
-            if keep_files:
-                continue
-
             try:
-                shutil.rmtree(job_dir(job_id), ignore_errors=True)
-                log_path = Path(job.get("log_path", ""))
-                if log_path.exists() and log_path.is_file():
-                    log_path.unlink()
+                if keep_files:
+                    state_store.delete_job_metadata(JOBS_DIR, job_id)
+                else:
+                    shutil.rmtree(job_dir(job_id), ignore_errors=True)
+                    log_path = Path(job.get("log_path", ""))
+                    if log_path.exists() and log_path.is_file():
+                        log_path.unlink()
             except Exception as exc:
                 skipped.append({"id": job_id, "status": status, "error": repr(exc)})
 
