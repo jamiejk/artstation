@@ -51,6 +51,11 @@ Runtime JSON persistence lives in `server/state_store.py`: atomic JSON writes,
 runtime JSON reads, job metadata paths, and log-tail reads. Validation and
 state-transition rules remain in `server.py`.
 
+Job continuation, paused-job resume, and dip-failure recovery workflows live in
+`server/job_runner.py`. The runner receives a small context from `server.py` so
+workflow logic can be tested without importing FastAPI routes or hardware
+globals.
+
 ## What the direct layer must preserve
 
 The direct layer is deliberately narrow. It must preserve:
