@@ -301,6 +301,57 @@ class PlotSettingsTests(unittest.TestCase):
         self.assertEqual(job["pen_pos_up"], 60)
         self.assertEqual(job["pen_delay_down"], -50)
 
+    def test_plotter_pen_uses_direct_ebb_before_axicli(self):
+        request = mock.Mock()
+        request.client.host = "127.0.0.1"
+        serial_port = object()
+
+        with (
+            mock.patch.object(server, "require_hardware_idle"),
+            mock.patch.object(server.serial, "Serial") as serial_cls,
+            mock.patch.object(
+                server,
+                "_run_pen_servo_on_port_locked",
+                return_value={"ok": True, "method": "direct_ebb", "position": "down"},
+            ) as direct,
+            mock.patch.object(server, "run_axicli_pen_manual") as axicli,
+        ):
+            serial_cls.return_value.__enter__.return_value = serial_port
+            result = server.plotter_pen(
+                request,
+                {"position": "down", "pen_pos_down": 0, "pen_pos_up": 100},
+                x_plotter_token="test-token",
+            )
+
+        self.assertEqual(result["method"], "direct_ebb")
+        direct.assert_called_once()
+        self.assertIs(direct.call_args.args[0], serial_port)
+        axicli.assert_not_called()
+
+    def test_plotter_pen_falls_back_to_axicli_when_direct_ebb_fails(self):
+        request = mock.Mock()
+        request.client.host = "127.0.0.1"
+
+        with (
+            mock.patch.object(server, "require_hardware_idle"),
+            mock.patch.object(server.serial, "Serial", side_effect=server.serial.SerialException("no serial")),
+            mock.patch.object(
+                server,
+                "run_axicli_pen_manual",
+                return_value={"ok": True, "method": "axicli_manual", "position": "up"},
+            ) as axicli,
+        ):
+            result = server.plotter_pen(
+                request,
+                {"position": "up", "pen_pos_down": 0, "pen_pos_up": 100},
+                x_plotter_token="test-token",
+            )
+
+        self.assertEqual(result["method"], "axicli_manual")
+        self.assertEqual(result["fallback_from"], "direct_ebb")
+        self.assertIn("no serial", result["direct_error"])
+        axicli.assert_called_once()
+
 
 class HomePositionTests(unittest.TestCase):
     def setUp(self):

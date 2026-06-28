@@ -3,7 +3,7 @@
 
 Default mode is dry-run. Pass --execute to move the servo.
 
-The direct path intentionally mirrors server.server._run_pen_servo_on_port_locked:
+The default direct path intentionally mirrors server.server._run_pen_servo_on_port_locked:
   SC,4,<up_pwm>
   SC,5,<down_pwm>
   SC,11,<up_rate>
@@ -39,6 +39,12 @@ def load_servo_config(path: Path) -> dict:
         "servo_sweep_time": 200,
         "servo_move_min": 45,
         "servo_move_slope": 2.69,
+        "nb_servo_pin": 2,
+        "nb_servo_min": 5400,
+        "nb_servo_max": 12600,
+        "nb_servo_sweep_time": 70,
+        "nb_servo_move_min": 45,
+        "nb_servo_move_slope": 2.69,
     }
     if path.exists():
         loaded = runpy.run_path(str(path))
@@ -52,6 +58,36 @@ def load_servo_config(path: Path) -> dict:
         "servo_sweep_time": float(config["servo_sweep_time"]),
         "servo_move_min": float(config["servo_move_min"]),
         "servo_move_slope": float(config["servo_move_slope"]),
+        "nb_servo_pin": int(config["nb_servo_pin"]),
+        "nb_servo_min": int(config["nb_servo_min"]),
+        "nb_servo_max": int(config["nb_servo_max"]),
+        "nb_servo_sweep_time": float(config["nb_servo_sweep_time"]),
+        "nb_servo_move_min": float(config["nb_servo_move_min"]),
+        "nb_servo_move_slope": float(config["nb_servo_move_slope"]),
+    }
+
+
+def select_servo_config(config: dict, penlift: int) -> dict:
+    if penlift == 3:
+        return {
+            "servo_pin": config["nb_servo_pin"],
+            "servo_min": config["nb_servo_min"],
+            "servo_max": config["nb_servo_max"],
+            "servo_sweep_time": config["nb_servo_sweep_time"],
+            "servo_move_min": config["nb_servo_move_min"],
+            "servo_move_slope": config["nb_servo_move_slope"],
+            "sc8": 1,
+            "pwm_period": 0.03,
+        }
+    return {
+        "servo_pin": config["servo_pin"],
+        "servo_min": config["servo_min"],
+        "servo_max": config["servo_max"],
+        "servo_sweep_time": config["servo_sweep_time"],
+        "servo_move_min": config["servo_move_min"],
+        "servo_move_slope": config["servo_move_slope"],
+        "sc8": 8,
+        "pwm_period": 0.24,
     }
 
 
@@ -62,7 +98,8 @@ def servo_pwm_for_pen_position(config: dict, pen_position: float) -> int:
 def servo_rate_value(config: dict, rate_percent: float) -> int:
     servo_range = max(1, config["servo_max"] - config["servo_min"])
     servo_sweep_time = max(1.0, float(config["servo_sweep_time"]))
-    return max(1, int(round(float(servo_range) * 0.24 / servo_sweep_time * float(rate_percent))))
+    pwm_period = float(config.get("pwm_period", 0.24))
+    return max(1, int(round(float(servo_range) * pwm_period / servo_sweep_time * float(rate_percent))))
 
 
 def servo_travel_delay_ms(config: dict, up_position: float, down_position: float, rate_percent: float) -> int:
@@ -86,7 +123,7 @@ def direct_commands(config: dict, *, position: str, up: int, down: int, raise_ra
         f"SC,5,{down_pwm}\r",
         f"SC,11,{servo_rate_value(config, raise_rate)}\r",
         f"SC,12,{servo_rate_value(config, lower_rate)}\r",
-        "SC,8,8\r",
+        f"SC,8,{config.get('sc8', 8)}\r",
         f"SP,{1 if raised else 0},{delay_ms},{config['servo_pin']}\r",
     ]
 
@@ -140,6 +177,8 @@ def run_axicli(args: argparse.Namespace, position: str) -> int:
         "manual",
         "--manual_cmd",
         "raise_pen" if position == "up" else "lower_pen",
+        "--penlift",
+        str(args.penlift),
         "--port",
         args.port,
         "--pen_pos_up",
@@ -170,6 +209,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--down", type=int, default=0)
     parser.add_argument("--raise-rate", type=int, default=100)
     parser.add_argument("--lower-rate", type=int, default=50)
+    parser.add_argument("--penlift", type=int, choices=[1, 2, 3], default=1)
     parser.add_argument("--port", default=DEFAULT_PORT)
     parser.add_argument("--axicli", default=DEFAULT_AXICLI)
     parser.add_argument("--config", type=Path, default=DEFAULT_CONFIG)
@@ -182,12 +222,15 @@ def main(argv: list[str] | None = None) -> int:
         if not 0 <= value <= 100:
             parser.error(f"{name} must be in AxiCLI's 0..100 range")
 
-    config = load_servo_config(args.config)
+    raw_config = load_servo_config(args.config)
+    config = select_servo_config(raw_config, args.penlift)
     print("Servo config:")
     print(f"  config={args.config if args.config.exists() else '(defaults)'}")
     print(f"  port={args.port}")
+    print(f"  penlift={args.penlift}")
     print(f"  servo_pin={config['servo_pin']}")
     print(f"  servo_min={config['servo_min']} servo_max={config['servo_max']}")
+    print(f"  SC,8,{config.get('sc8', 8)}")
     print(f"  up={args.up} -> pwm={servo_pwm_for_pen_position(config, args.up)}")
     print(f"  down={args.down} -> pwm={servo_pwm_for_pen_position(config, args.down)}")
     if not args.execute:

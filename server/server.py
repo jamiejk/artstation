@@ -1061,6 +1061,43 @@ def run_axicli_pen_manual(
     }
 
 
+def run_pen_manual_direct_first(
+    *,
+    raised: bool,
+    up_pos: int,
+    down_pos: int,
+    raise_rate: int,
+    lower_rate: int,
+    delay_up_ms: int,
+    delay_down_ms: int,
+) -> dict:
+    try:
+        with serial.Serial(PLOTTER_PORT, timeout=2) as port:
+            return _run_pen_servo_on_port_locked(
+                port,
+                raised=raised,
+                up_pos=up_pos,
+                down_pos=down_pos,
+                raise_rate=raise_rate,
+                lower_rate=lower_rate,
+                delay_up_ms=delay_up_ms,
+                delay_down_ms=delay_down_ms,
+            )
+    except Exception as direct_exc:
+        fallback = run_axicli_pen_manual(
+            raised=raised,
+            up_pos=up_pos,
+            down_pos=down_pos,
+            raise_rate=raise_rate,
+            lower_rate=lower_rate,
+            delay_up_ms=delay_up_ms,
+            delay_down_ms=delay_down_ms,
+        )
+        fallback["fallback_from"] = "direct_ebb"
+        fallback["direct_error"] = repr(direct_exc)
+        return fallback
+
+
 def generate_plot_digest(input_svg: Path, output_svg: Path, job_settings: dict) -> None:
     cmd = axicli_cmd() + [
         str(input_svg),
@@ -3533,7 +3570,7 @@ def plotter_pen(
     require_hardware_idle()
     try:
         with hardware_lock:
-            result = run_axicli_pen_manual(
+            result = run_pen_manual_direct_first(
                 raised=position == "up",
                 up_pos=up_pos,
                 down_pos=down_pos,
