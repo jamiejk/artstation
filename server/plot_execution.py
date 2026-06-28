@@ -12,14 +12,19 @@ from pathlib import Path
 import subprocess
 
 try:
-    from server.ink_dip import (
+    import timing_log
+except ImportError:
+    from server import timing_log
+
+try:
+    from ink_dip import (
         estimate_checkpoint_schedule,
         find_keepout_collision,
         parse_plob_polylines,
         write_checkpoint_digest,
     )
-except ModuleNotFoundError:
-    from ink_dip import (
+except ImportError:
+    from server.ink_dip import (
         estimate_checkpoint_schedule,
         find_keepout_collision,
         parse_plob_polylines,
@@ -206,10 +211,29 @@ def run_layer(
     log.flush()
     log_start = Path(job["log_path"]).stat().st_size
 
+    timing_start = timing_log.monotonic()
     returncode = run_axicli_command(cmd, log, job_id=job["id"])
+    timing = timing_log.write_timing(
+        log,
+        "axicli_layer_plot",
+        timing_start,
+        job_id=job.get("id"),
+        layer=layer.get("index"),
+        returncode=returncode,
+    )
     log.flush()
     text = Path(job["log_path"]).read_text(encoding="utf-8", errors="replace")[log_start:]
-    return classify_axicli_layer_result(returncode, text)
+    result = classify_axicli_layer_result(returncode, text)
+    timing_log.write_timing(
+        log,
+        "layer_plot_result",
+        timing_start,
+        job_id=job.get("id"),
+        layer=layer.get("index"),
+        result=result,
+        axicli_elapsed_ms=timing["elapsed_ms"],
+    )
+    return result
 
 
 def resume_layer(
@@ -245,9 +269,28 @@ def resume_layer(
     log.flush()
     resume_log_start = Path(job["log_path"]).stat().st_size
 
+    timing_start = timing_log.monotonic()
     returncode = run_axicli_command(cmd, log, job_id=job["id"])
+    timing = timing_log.write_timing(
+        log,
+        "axicli_layer_resume",
+        timing_start,
+        job_id=job.get("id"),
+        layer=layer.get("index"),
+        returncode=returncode,
+    )
     finalize_resume_progress(progress_svg, resumed_svg)
 
     log.flush()
     text = Path(job["log_path"]).read_text(encoding="utf-8", errors="replace")[resume_log_start:]
-    return classify_axicli_layer_result(returncode, text)
+    result = classify_axicli_layer_result(returncode, text)
+    timing_log.write_timing(
+        log,
+        "layer_resume_result",
+        timing_start,
+        job_id=job.get("id"),
+        layer=layer.get("index"),
+        result=result,
+        axicli_elapsed_ms=timing["elapsed_ms"],
+    )
+    return result

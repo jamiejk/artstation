@@ -22,11 +22,13 @@ try:
     from server import job_runner
     from server import plot_execution
     from server import state_store
+    from server import timing_log
 except ImportError:
     import hardware
     import job_runner
     import plot_execution
     import state_store
+    import timing_log
 
 try:
     from server.ink_dip import (
@@ -1566,6 +1568,7 @@ def _run_dip_circles_locked(job: dict, log) -> dict:
 
 
 def execute_dip_cycle(job: dict, log, *, return_position: dict | None = None) -> dict:
+    cycle_start = timing_log.monotonic()
     well = job.get("ink_well")
     if not job.get("auto_dip_enabled") or not well:
         raise RuntimeError("Automatic dipping is not configured for this job")
@@ -1576,17 +1579,40 @@ def execute_dip_cycle(job: dict, log, *, return_position: dict | None = None) ->
     speed_mm_s = min(SAFE_MANUAL_MAX_XY_SPEED_MM_S, 60.0)
     with hardware_lock:
         with serial.Serial(PLOTTER_PORT, timeout=2) as port:
+            phase_start = timing_log.monotonic()
             require_enabled_high_resolution_motors(port)
             _run_dip_servo_on_port_locked(port, job, raised=True, log=log)
+            timing_log.write_timing(log, "dip_clearance_raise", phase_start, job_id=job.get("id"))
             update_job(job["id"], dip_return_position=dict(return_position))
+            phase_start = timing_log.monotonic()
             _move_to_bed_target_on_port_locked(port, well["centre"], speed_mm_s=speed_mm_s, log=log)
+            timing_log.write_timing(log, "dip_travel_to_well", phase_start, job_id=job.get("id"))
+            phase_start = timing_log.monotonic()
             _run_dip_servo_on_port_locked(port, job, raised=False, log=log)
             circle_result = _run_dip_circles_on_port_locked(port, job, log)
             time.sleep(well["dwell_ms"] / 1000.0)
+            timing_log.write_timing(
+                log,
+                "dip_load_pen",
+                phase_start,
+                job_id=job.get("id"),
+                dwell_ms=well.get("dwell_ms"),
+                circles=circle_result.get("count"),
+            )
+            phase_start = timing_log.monotonic()
             _run_dip_servo_on_port_locked(port, job, raised=True, log=log)
             if well.get("drip_dwell_ms", 0):
                 time.sleep(well["drip_dwell_ms"] / 1000.0)
+            timing_log.write_timing(
+                log,
+                "dip_raise_after_load",
+                phase_start,
+                job_id=job.get("id"),
+                drip_dwell_ms=well.get("drip_dwell_ms", 0),
+            )
+            phase_start = timing_log.monotonic()
             actual = _move_to_bed_target_on_port_locked(port, return_position, speed_mm_s=speed_mm_s, log=log)
+            timing_log.write_timing(log, "dip_return_to_plot", phase_start, job_id=job.get("id"))
 
     error_mm = math.hypot(
         actual["x_mm"] - return_position["x_mm"],
@@ -1594,12 +1620,20 @@ def execute_dip_cycle(job: dict, log, *, return_position: dict | None = None) ->
     )
     if error_mm > 0.5:
         raise RuntimeError(f"Dip return verification failed with {error_mm:.4f} mm error")
-    return {
+    result = {
         "return_position": dict(return_position),
         "actual_position": actual,
         "return_error_mm": round(error_mm, 4),
         "dip_circles": circle_result,
     }
+    result["timing"] = timing_log.write_timing(
+        log,
+        "dip_cycle_total",
+        cycle_start,
+        job_id=job.get("id"),
+        return_error_mm=result["return_error_mm"],
+    )
+    return result
 
 
 def attempt_dip_clearance_raise(job: dict, log) -> None:
@@ -1976,6 +2010,7 @@ def run_layer_with_auto_dips(
         return resume_layer(job, layer, log) if resume else run_layer(job, layer, log)
 
     def perform_dip(phase: str) -> bool:
+        dip_start = timing_log.monotonic()
         update_job(
             job["id"],
             status="dipping",
@@ -1996,6 +2031,14 @@ def run_layer_with_auto_dips(
                 status="running",
                 dip_phase=None,
             )
+            timing_log.write_timing(
+                log,
+                "auto_dip_phase_complete",
+                dip_start,
+                job_id=job.get("id"),
+                layer=layer.get("index"),
+                phase=phase,
+            )
             return True
         except Exception as exc:
             attempt_dip_clearance_raise(job, log)
@@ -2015,6 +2058,14 @@ def run_layer_with_auto_dips(
                 ),
             )
             announce_on_linux_box(f"Job {job['id']} automatic dip failed: {exc!r}")
+            timing_log.write_timing(
+                log,
+                "auto_dip_phase_failed",
+                dip_start,
+                job_id=job.get("id"),
+                layer=layer.get("index"),
+                phase=phase,
+            )
             return False
 
     if not resume and perform_initial_dip and not perform_dip("initial"):
@@ -2023,11 +2074,39 @@ def run_layer_with_auto_dips(
     update_job(job["id"], status="running", dip_phase=None)
     if resume:
         prime_pen_down_after_manual_dip(job, log)
+    plot_start = timing_log.monotonic()
     plot_result = resume_layer(job, layer, log) if resume else run_layer(job, layer, log)
+    timing_log.write_timing(
+        log,
+        "auto_dip_plot_segment",
+        plot_start,
+        job_id=job.get("id"),
+        layer=layer.get("index"),
+        result=plot_result,
+        resume=resume,
+    )
     while plot_result == "auto_dip_pause":
+        checkpoint_start = timing_log.monotonic()
         if not perform_dip("checkpoint"):
             return "dip_failed"
+        resume_start = timing_log.monotonic()
         plot_result = resume_layer(job, layer, log)
+        timing_log.write_timing(
+            log,
+            "auto_dip_resume_after_checkpoint",
+            resume_start,
+            job_id=job.get("id"),
+            layer=layer.get("index"),
+            result=plot_result,
+        )
+        timing_log.write_timing(
+            log,
+            "auto_dip_checkpoint_round_trip",
+            checkpoint_start,
+            job_id=job.get("id"),
+            layer=layer.get("index"),
+            result=plot_result,
+        )
     return plot_result
 
 

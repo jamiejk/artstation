@@ -1,5 +1,6 @@
 import tempfile
 import unittest
+import io
 from pathlib import Path
 from unittest import mock
 
@@ -66,10 +67,11 @@ class PlotExecutionTests(unittest.TestCase):
                 plot_execution.resume_progress_output_path(progress_svg).write_text("new", encoding="utf-8")
                 return 0
 
+            log = io.StringIO()
             result = plot_execution.resume_layer(
                 job,
                 layer,
-                mock.Mock(),
+                log,
                 axicli="/axicli",
                 axicli_config=root / "missing.conf",
                 plotter_port="/dev/ttyTEST",
@@ -79,6 +81,8 @@ class PlotExecutionTests(unittest.TestCase):
             self.assertEqual(result, "done")
             self.assertEqual(progress_svg.read_text(encoding="utf-8"), "new")
             self.assertFalse(plot_execution.resume_progress_output_path(progress_svg).exists())
+            self.assertIn("[timing] axicli_layer_resume", log.getvalue())
+            self.assertIn("[timing] layer_resume_result", log.getvalue())
 
 
 if __name__ == "__main__":

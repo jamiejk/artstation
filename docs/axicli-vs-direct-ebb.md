@@ -56,6 +56,12 @@ Job continuation, paused-job resume, and dip-failure recovery workflows live in
 workflow logic can be tested without importing FastAPI routes or hardware
 globals.
 
+Job logs include structured `[timing]` lines from `server/timing_log.py` around
+AxiCLI plot/resume calls, auto-dip checkpoint round trips, and dip-cycle phases.
+Use these timings before moving more behavior to direct EBB; they show whether
+the bottleneck is AxiCLI startup/resume, dip travel, servo dwell, or file/state
+handling.
+
 ## What the direct layer must preserve
 
 The direct layer is deliberately narrow. It must preserve:
