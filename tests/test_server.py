@@ -58,7 +58,7 @@ class MotionSafetyTests(unittest.TestCase):
             ("PI,1", "OK"),
             ("PI,1", "OK"),
         ]
-        with mock.patch.object(server, "serial_query", side_effect=replies) as query:
+        with mock.patch.object(server.hardware, "serial_query", side_effect=replies) as query:
             server.require_enabled_high_resolution_motors(object())
         self.assertEqual(query.call_count, 5)
 
@@ -70,7 +70,7 @@ class MotionSafetyTests(unittest.TestCase):
             ("PI,1", "OK"),
             ("PI,1", "OK"),
         ]
-        with mock.patch.object(server, "serial_query", side_effect=replies) as query:
+        with mock.patch.object(server.hardware, "serial_query", side_effect=replies) as query:
             server.require_cached_high_resolution_motors(object())
             server.require_cached_high_resolution_motors(object())
         self.assertEqual(query.call_count, 5)

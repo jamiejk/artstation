@@ -37,6 +37,11 @@ These operations use the EBB command protocol directly, for example:
 - `QP`, `QB`, and `PI` for hardware state.
 - `SC` and `SP` for servo configuration and pen up/down.
 
+The low-level direct protocol lives in `server/hardware.py`. It should stay
+free of FastAPI routes, job queue state, and operator UI policy. `server.py`
+owns orchestration: locks, saved calibration, job state, API errors, and
+operator-visible recovery choices.
+
 ## What the direct layer must preserve
 
 The direct layer is deliberately narrow. It must preserve:
