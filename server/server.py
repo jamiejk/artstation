@@ -18,8 +18,10 @@ import serial
 
 try:
     from server import hardware
+    from server import plot_execution
 except ImportError:
     import hardware
+    import plot_execution
 
 try:
     from server.ink_dip import (
@@ -1013,10 +1015,7 @@ def run_axicli_command(cmd: list[str], log, *, job_id: str | None = None) -> int
 
 
 def axicli_cmd() -> list[str]:
-    cmd = [AXICLI]
-    if AXICLI_CONFIG.exists():
-        cmd.extend(["--config", str(AXICLI_CONFIG)])
-    return cmd
+    return plot_execution.axicli_cmd(AXICLI, AXICLI_CONFIG)
 
 
 def run_axicli_pen_manual(
@@ -1104,29 +1103,7 @@ def run_pen_manual_direct_first(
 
 
 def generate_plot_digest(input_svg: Path, output_svg: Path, job_settings: dict) -> None:
-    cmd = axicli_cmd() + [
-        str(input_svg),
-        "--digest",
-        "2",
-        "--output_file",
-        str(output_svg),
-        "--speed_pendown",
-        str(job_settings["speed_pendown"]),
-        "--speed_penup",
-        str(job_settings["speed_penup"]),
-        "--pen_pos_down",
-        str(job_settings["pen_pos_down"]),
-        "--pen_pos_up",
-        str(job_settings["pen_pos_up"]),
-    ]
-    proc = subprocess.run(
-        cmd,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.STDOUT,
-        text=True,
-    )
-    if proc.returncode != 0 or not output_svg.exists():
-        raise ValueError(f"AxiDraw could not prepare the plot digest: {proc.stdout[-2000:]}")
+    plot_execution.generate_plot_digest(input_svg, output_svg, job_settings, axicli=AXICLI, axicli_config=AXICLI_CONFIG)
 
 
 def analyse_layer_for_ink_well(
@@ -1138,44 +1115,21 @@ def analyse_layer_for_ink_well(
     well: dict,
     dip_interval_s: float | None = None,
 ) -> dict:
-    generate_plot_digest(input_svg, digest_svg, job_settings)
-    polylines = parse_plob_polylines(digest_svg)
-    collision = find_keepout_collision(
-        polylines,
-        origin_mm=(home["x_mm"], home["y_mm"]),
-        centre_mm=(well["centre"]["x_mm"], well["centre"]["y_mm"]),
-        radius_mm=well["radius_mm"],
+    return plot_execution.analyse_layer_for_ink_well(
+        input_svg,
+        digest_svg,
+        job_settings=job_settings,
+        home=home,
+        well=well,
+        axicli=AXICLI,
+        axicli_config=AXICLI_CONFIG,
+        dip_interval_s=dip_interval_s,
+        generate_plot_digest_fn=generate_plot_digest,
     )
-    if collision:
-        raise ValueError(
-            "Prepared plot intersects the installed ink well keep-out zone "
-            f"during {collision['motion']} motion at stroke {collision['stroke']}"
-        )
-
-    result = {
-        "stroke_count": len(polylines),
-        "keepout_clear": True,
-    }
-    if dip_interval_s is not None:
-        result["dip_schedule"] = estimate_checkpoint_schedule(
-            polylines,
-            speed_pendown=job_settings["speed_pendown"],
-            interval_s=dip_interval_s,
-        )
-    return result
 
 
 def prepare_auto_dip_layer(layer: dict, analysis: dict) -> None:
-    digest_svg = Path(layer["plot_digest_svg"])
-    prepared_svg = digest_svg.with_name("auto_dip_plot.svg")
-    schedule = analysis["dip_schedule"]
-    write_checkpoint_digest(
-        digest_svg,
-        prepared_svg,
-        schedule["checkpoint_after_strokes"],
-    )
-    layer["plot_svg"] = str(prepared_svg)
-    layer["auto_dip_checkpoint_count"] = len(schedule["checkpoint_after_strokes"])
+    plot_execution.prepare_auto_dip_layer(layer, analysis, write_checkpoint_digest_fn=write_checkpoint_digest)
 
 
 def run_control_command(cmd: list[str]) -> dict:
@@ -1950,58 +1904,23 @@ def run_layer(job: dict, layer: dict, log) -> str:
       "paused"
       "failed"
     """
-    cmd = axicli_cmd() + [
-        str(layer.get("plot_svg") or layer["input_svg"]),
-        "--port",
-        PLOTTER_PORT,
-        "-o",
-        str(layer["progress_svg"]),
-        "--speed_pendown",
-        str(job["speed_pendown"]),
-        "--speed_penup",
-        str(job["speed_penup"]),
-        "--pen_pos_down",
-        str(job["pen_pos_down"]),
-        "--pen_pos_up",
-        str(job["pen_pos_up"]),
-        "--pen_delay_down",
-        str(job.get("pen_delay_down", DEFAULT_PEN_DELAY_DOWN)),
-        "--pen_delay_up",
-        str(job.get("pen_delay_up", DEFAULT_PEN_DELAY_UP)),
-        "--pen_rate_raise",
-        str(job.get("pen_rate_raise", DEFAULT_PEN_RATE_RAISE)),
-    ]
-
-    log.write("\nPlotting layer:\n")
-    log.write(f"Layer {layer['index']}: {layer['name']}\n")
-    log.write(" ".join(cmd) + "\n\n")
-    log.flush()
-    log_start = Path(job["log_path"]).stat().st_size
-
-    returncode = run_axicli_command(cmd, log, job_id=job["id"])
-    log.flush()
-    text = Path(job["log_path"]).read_text(encoding="utf-8", errors="replace")[log_start:]
-
-    if "Plot paused programmatically" in text:
-        return "auto_dip_pause"
-    if "Plot paused" in text or "Use the resume feature" in text:
-        return "paused"
-
-    if returncode == 0:
-        return "done"
-
-    return "failed"
+    return plot_execution.run_layer(
+        job,
+        layer,
+        log,
+        axicli=AXICLI,
+        axicli_config=AXICLI_CONFIG,
+        plotter_port=PLOTTER_PORT,
+        run_axicli_command=run_axicli_command,
+    )
 
 
 def resume_progress_output_path(progress_svg: Path) -> Path:
-    return progress_svg.with_name(f"{progress_svg.stem}.next{progress_svg.suffix}")
+    return plot_execution.resume_progress_output_path(progress_svg)
 
 
 def finalize_resume_progress(progress_svg: Path, resumed_svg: Path) -> bool:
-    if not resumed_svg.exists():
-        return False
-    resumed_svg.replace(progress_svg)
-    return True
+    return plot_execution.finalize_resume_progress(progress_svg, resumed_svg)
 
 
 def resume_layer(job: dict, layer: dict, log) -> str:
@@ -2013,56 +1932,15 @@ def resume_layer(job: dict, layer: dict, log) -> str:
       "paused"
       "failed"
     """
-    progress_svg = Path(layer["progress_svg"])
-    if not progress_svg.exists():
-        raise FileNotFoundError(f"Progress SVG not found: {progress_svg}")
-
-    resumed_svg = resume_progress_output_path(progress_svg)
-    resumed_svg.unlink(missing_ok=True)
-    cmd = axicli_cmd() + [
-        str(progress_svg),
-        "--mode",
-        "res_plot",
-        "--port",
-        PLOTTER_PORT,
-        "-o",
-        str(resumed_svg),
-        "--speed_pendown",
-        str(job["speed_pendown"]),
-        "--speed_penup",
-        str(job["speed_penup"]),
-        "--pen_pos_down",
-        str(job["pen_pos_down"]),
-        "--pen_pos_up",
-        str(job["pen_pos_up"]),
-        "--pen_delay_down",
-        str(job.get("pen_delay_down", DEFAULT_PEN_DELAY_DOWN)),
-        "--pen_delay_up",
-        str(job.get("pen_delay_up", DEFAULT_PEN_DELAY_UP)),
-        "--pen_rate_raise",
-        str(job.get("pen_rate_raise", DEFAULT_PEN_RATE_RAISE)),
-    ]
-
-    log.write("\nResuming layer:\n")
-    log.write(f"Layer {layer['index']}: {layer['name']}\n")
-    log.write(" ".join(cmd) + "\n\n")
-    log.flush()
-    resume_log_start = Path(job["log_path"]).stat().st_size
-
-    returncode = run_axicli_command(cmd, log, job_id=job["id"])
-    finalize_resume_progress(progress_svg, resumed_svg)
-
-    log.flush()
-    text = Path(job["log_path"]).read_text(encoding="utf-8", errors="replace")[resume_log_start:]
-    if "Plot paused programmatically" in text:
-        return "auto_dip_pause"
-    if "Plot paused" in text or "Use the resume feature" in text:
-        return "paused"
-
-    if returncode == 0:
-        return "done"
-
-    return "failed"
+    return plot_execution.resume_layer(
+        job,
+        layer,
+        log,
+        axicli=AXICLI,
+        axicli_config=AXICLI_CONFIG,
+        plotter_port=PLOTTER_PORT,
+        run_axicli_command=run_axicli_command,
+    )
 
 
 def prime_pen_down_after_manual_dip(job: dict, log) -> dict | None:

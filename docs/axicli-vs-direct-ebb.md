@@ -42,6 +42,11 @@ free of FastAPI routes, job queue state, and operator UI policy. `server.py`
 owns orchestration: locks, saved calibration, job state, API errors, and
 operator-visible recovery choices.
 
+The AxiCLI plotting mechanics live in `server/plot_execution.py`: command
+construction, one-layer plot/resume execution, digest generation, keep-out
+analysis, auto-dip checkpoint SVG preparation, and stable progress-file
+replacement. Job queue state and operator decisions remain in `server.py`.
+
 ## What the direct layer must preserve
 
 The direct layer is deliberately narrow. It must preserve:
