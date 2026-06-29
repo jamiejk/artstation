@@ -1163,6 +1163,80 @@ class AutoDipExecutionTests(unittest.TestCase):
         self.assertEqual(job["dip_interval_s"], 30.0)
         self.assertIn("Existing prepared checkpoints are unchanged", job["operator_message"])
 
+    def test_enables_auto_dip_for_queued_job_before_start(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            input_svg = Path(tmpdir) / "input.svg"
+            input_svg.write_text('<svg xmlns="http://www.w3.org/2000/svg" width="10mm" height="10mm"/>', encoding="utf-8")
+            job = {
+                "id": "queued-job",
+                "status": "queued_for_operator",
+                "layers": [
+                    {
+                        "index": 1,
+                        "name": "Layer 1",
+                        "input_svg": str(input_svg),
+                        "svg_metrics": {"width_mm": 10.0, "height_mm": 10.0},
+                    }
+                ],
+                "speed_pendown": 20,
+                "speed_penup": 40,
+                "pen_pos_down": 10,
+                "pen_pos_up": 90,
+            }
+            server.jobs[job["id"]] = job
+
+            def prepare(layer, _analysis):
+                layer["plot_svg"] = str(Path(layer["plot_digest_svg"]).with_name("auto_dip_plot.svg"))
+                layer["auto_dip_checkpoint_count"] = 2
+
+            with (
+                mock.patch.object(server, "current_ink_well_settings", return_value={"installed": True}),
+                mock.patch.object(server, "ink_well_plot_snapshot", return_value={"centre": {"x_mm": 1, "y_mm": 2}}),
+                mock.patch.object(server, "current_home_position", return_value={"x_mm": 3, "y_mm": 4}),
+                mock.patch.object(server, "analyse_layer_for_ink_well", return_value={"dip_schedule": {"checkpoint_after_strokes": [1, 2]}}) as analyse,
+                mock.patch.object(server, "prepare_auto_dip_layer", side_effect=prepare),
+                mock.patch.object(server, "save_job_unlocked"),
+            ):
+                result = server.update_job_auto_dip(
+                    job["id"],
+                    {"auto_dip_enabled": True, "dip_interval_s": 45},
+                    x_plotter_token="test-token",
+                )
+
+        self.assertTrue(result["auto_dip_enabled"])
+        self.assertEqual(result["dip_interval_s"], 45.0)
+        self.assertTrue(job["auto_dip_enabled"])
+        self.assertEqual(job["plot_start_position"], {"x_mm": 3, "y_mm": 4})
+        self.assertEqual(job["layers"][0]["auto_dip_checkpoint_count"], 2)
+        self.assertTrue(job["layers"][0]["plot_svg"].endswith("auto_dip_plot.svg"))
+        analyse.assert_called_once()
+        server.jobs.pop(job["id"], None)
+
+    def test_disables_auto_dip_for_queued_job_before_start(self):
+        job = {
+            "id": "queued-job",
+            "status": "waiting_for_operator",
+            "auto_dip_enabled": True,
+            "dip_interval_s": 60,
+            "dip_failure": {"error": "old"},
+            "layers": [{"index": 1, "plot_svg": "/tmp/auto.svg", "auto_dip_checkpoint_count": 3}],
+        }
+        server.jobs[job["id"]] = job
+
+        with mock.patch.object(server, "save_job_unlocked"):
+            result = server.update_job_auto_dip(
+                job["id"],
+                {"auto_dip_enabled": False},
+                x_plotter_token="test-token",
+            )
+
+        self.assertFalse(result["auto_dip_enabled"])
+        self.assertFalse(job["auto_dip_enabled"])
+        self.assertIsNone(job["dip_interval_s"])
+        self.assertIsNone(job["layers"][0]["plot_svg"])
+        self.assertEqual(job["layers"][0]["auto_dip_checkpoint_count"], 0)
+        server.jobs.pop(job["id"], None)
+
     def test_dip_now_keeps_paused_job_paused(self):
         job = {
             "id": "dip-job",

@@ -742,6 +742,24 @@
             <button id="wellConfirmTest">Confirm Test Passed</button>
             <button id="wellInstalled">Mark Installed</button>
           </div>
+          <div class="job-controls" id="wellAutoDipControls">
+            <div class="toolbar">
+              <label class="mono" style="display:flex;align-items:center;gap:6px">
+                <input id="autoDip" type="checkbox">
+                Automatic ink dipping
+              </label>
+              <label class="mono" style="display:flex;align-items:center;gap:6px">
+                Dip interval
+                <input id="dipInterval" type="number" min="0.1" max="86400" step="0.1" value="60">
+                s
+              </label>
+            </div>
+            <div class="toolbar">
+              <button id="wellSaveAutoDipDefault">Save Default</button>
+              <button id="wellApplyQueuedAutoDip">Apply to Queued Job</button>
+            </div>
+            <div class="spec-note" id="autoDipStatus">Auto Dip is off.</div>
+          </div>
           <div class="job-controls" id="wellPausedDipControls">
             <div class="toolbar">
               <button id="wellDipNow">Dip Now</button>
@@ -854,15 +872,7 @@
               <label for="layerNames">Layer names, comma-separated</label>
               <input id="layerNames" type="text" placeholder="Blue, Black">
             </div>
-            <div class="form-row">
-              <label for="autoDip">Automatic ink dipping</label>
-              <input id="autoDip" type="checkbox">
-            </div>
-            <div class="form-row">
-              <label for="dipInterval">Active plotting interval (s)</label>
-              <input id="dipInterval" type="number" min="0.1" max="86400" step="0.1" value="60">
-            </div>
-            <div class="spec-note" id="autoDipStatus">Auto Dip is off.</div>
+            <div class="spec-note">Automatic ink dipping uses the default in the Ink Well panel. Save or change it there before upload; externally submitted jobs inherit the same default unless their request explicitly sets auto_dip.</div>
             <div class="toolbar" style="margin-top:10px">
               <button id="uploadSubmit" class="primary" type="submit">Prepare &amp; Queue</button>
             </div>
@@ -1107,8 +1117,8 @@
       const enabled = Boolean($("autoDip") && $("autoDip").checked);
       const ready = inkWellReadyForAutoDip();
       let text = enabled
-        ? `Auto Dip on: initial dip before plotting, then re-dip after about ${interval}s of pen-down plotting.`
-        : "Auto Dip off: this upload will not dip before or during plotting.";
+        ? `Auto Dip default on: uploads without an explicit auto_dip value will dip before plotting, then re-dip after about ${interval}s of pen-down plotting.`
+        : "Auto Dip default off: uploads without an explicit auto_dip value will not dip before or during plotting.";
       if (!ready) {
         text += " Ink well is not ready: run/confirm the test and mark it installed after setting the centre.";
       }
@@ -1535,15 +1545,27 @@
       $(elementId).innerHTML = jobs.length ? jobs.map(jobCard).join("") : `<div class="empty-state">${escapeHtml(emptyText)}</div>`;
     }
 
+    function preStartDipJob() {
+      return state.jobs
+        .filter((job) => ["queued", "queued_for_operator", "waiting_for_operator"].includes(job.status))
+        .sort((a, b) => Number(a.created_at || 0) - Number(b.created_at || 0))[0] || null;
+    }
+
     function renderPausedDipControls() {
       const job = state.pausedJob && state.pausedJob.auto_dip_enabled ? state.pausedJob : null;
+      const queuedJob = preStartDipJob();
       const dipNow = $("wellDipNow");
       const intervalInput = $("wellPausedDipInterval");
       const intervalSave = $("wellPausedDipIntervalSave");
+      const applyQueued = $("wellApplyQueuedAutoDip");
       const status = $("wellPausedDipStatus");
       if (!dipNow || !intervalInput || !intervalSave || !status) return;
 
       dipNow.disabled = !job;
+      if (applyQueued) {
+        applyQueued.disabled = !queuedJob;
+        applyQueued.dataset.jobId = queuedJob ? queuedJob.id : "";
+      }
       intervalInput.disabled = false;
       intervalSave.disabled = false;
       dipNow.dataset.jobId = job ? job.id : "";
@@ -2068,6 +2090,44 @@
           .then((result) => {
             applyInkWell(result.ink_well);
             setMessage(result.ink_well.installed ? "Ink well marked installed; keep-out is active for every upload." : "Ink well marked removed.");
+          })
+          .catch((error) => setMessage(error.message));
+      });
+      $("autoDip").addEventListener("change", renderAutoDipStatus);
+      $("dipInterval").addEventListener("input", renderAutoDipStatus);
+      $("wellSaveAutoDipDefault").addEventListener("click", () => {
+        withButtonFeedback("wellSaveAutoDipDefault", "Saving auto-dip default…", () => savePlotSettings())
+          .then(() => setMessage(`Auto-dip default ${$("autoDip").checked ? "enabled" : "disabled"}; interval ${Number($("dipInterval").value || 60)}s.`))
+          .then(() => refresh())
+          .catch((error) => setMessage(error.message));
+      });
+      $("wellApplyQueuedAutoDip").addEventListener("click", () => {
+        const jobId = $("wellApplyQueuedAutoDip").dataset.jobId;
+        if (!jobId) {
+          setMessage("No queued/pre-start job is available. This can only be changed before plotting starts.");
+          return;
+        }
+        const enabled = $("autoDip").checked;
+        const interval = clamp(Number($("dipInterval").value || 60), 0.1, 86400);
+        withButtonFeedback(
+          "wellApplyQueuedAutoDip",
+          enabled ? "Preparing job dips…" : "Disabling job dips…",
+          async () => {
+            const plotResult = await post("/plotter/plot_settings", { auto_dip_enabled: enabled, dip_interval_s: interval });
+            if (state.config) {
+              state.config.auto_dip_enabled = plotResult.plot_settings.auto_dip_enabled;
+              state.config.dip_interval_s = plotResult.plot_settings.dip_interval_s;
+            }
+            return post(`/jobs/${jobId}/auto_dip`, { auto_dip_enabled: enabled, dip_interval_s: interval });
+          }
+        )
+          .then((result) => {
+            const estimates = result.dip_estimates || [];
+            const estimateText = estimates.length && result.auto_dip_enabled
+              ? ` Estimated dips: ${estimates.reduce((sum, item) => sum + Number(item.estimated_dip_count_per_layer || 0), 0)}.`
+              : "";
+            setMessage(`${result.message || "Queued job updated."}${estimateText}`);
+            refresh();
           })
           .catch((error) => setMessage(error.message));
       });

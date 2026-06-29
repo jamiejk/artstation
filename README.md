@@ -72,7 +72,7 @@ The **Clear stopped jobs** button removes completed, failed, cancelled, interrup
 
 For dip pens and brushes, use the **Ink Well** panel to save the centre, keep-out radius, clearance servo position, dip depth, dwell times, and optional pickup circles. Pickup circles are small pen-down circles run inside the well after dipping; the default is 3 circles at 10 mm diameter, run at 60 mm/s. A successful test cycle is required before the well can be marked installed. While installed, every upload and rerun is checked against the keep-out circle, including pen-up travel.
 
-Enable **Automatic ink dipping** when uploading a job and set the active plotting interval. The server prepares an AxiDraw plot digest, schedules dips only between complete strokes, and reports the estimated dip count and longest uninterrupted stroke. Each enabled layer dips once before drawing. Existing AxiDraw programmatic-pause layers are rejected for automatic-dip jobs.
+Enable **Automatic ink dipping** in the **Ink Well** panel and set the active plotting interval. This setting is saved as the default for future jobs, including jobs uploaded from external clients that do not explicitly send an `auto_dip` value. Before a job starts plotting, the same panel can apply the current automatic-dip on/off setting and interval to the next queued/pre-start job. The server prepares an AxiDraw plot digest, schedules dips only between complete strokes, and reports the estimated dip count and longest uninterrupted stroke. Each enabled layer dips once before drawing. Existing AxiDraw programmatic-pause layers are rejected for automatic-dip jobs.
 
 Automatic dipping can also be requested through the upload API:
 

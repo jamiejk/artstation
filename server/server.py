@@ -1136,6 +1136,74 @@ def prepare_auto_dip_layer(layer: dict, analysis: dict) -> None:
     plot_execution.prepare_auto_dip_layer(layer, analysis, write_checkpoint_digest_fn=write_checkpoint_digest)
 
 
+PRE_START_JOB_STATUSES = {"queued", "queued_for_operator", "waiting_for_operator"}
+
+
+def configure_job_auto_dip(job: dict, *, enabled: bool, dip_interval_s: float | None) -> None:
+    if job.get("status") not in PRE_START_JOB_STATUSES:
+        raise HTTPException(status_code=400, detail=f"Job auto-dip can only be changed before plotting starts; status is {job.get('status')!r}")
+
+    if not enabled:
+        for layer in job.get("layers") or []:
+            layer["plot_svg"] = None
+            layer["auto_dip_checkpoint_count"] = 0
+        job["auto_dip_enabled"] = False
+        job["dip_interval_s"] = None
+        job["dip_failure"] = None
+        job["operator_message"] = "Automatic ink dipping disabled before plot start."
+        return
+
+    interval_s = validate_dip_interval(dip_interval_s)
+    well_settings = current_ink_well_settings()
+    if not well_settings.get("installed"):
+        raise HTTPException(
+            status_code=409,
+            detail="Complete the ink well test and mark it installed before enabling automatic dipping",
+        )
+    try:
+        well_snapshot = ink_well_plot_snapshot(well_settings)
+        start_home = current_home_position()
+    except (ValueError, HTTPException) as exc:
+        detail = exc.detail if isinstance(exc, HTTPException) else str(exc)
+        raise HTTPException(status_code=409, detail=detail) from exc
+
+    job_settings = {
+        "speed_pendown": job.get("speed_pendown", current_plot_settings()["speed_pendown"]),
+        "speed_penup": job.get("speed_penup", current_plot_settings()["speed_penup"]),
+        "pen_pos_down": job.get("pen_pos_down", current_pen_settings()["pen_pos_down"]),
+        "pen_pos_up": job.get("pen_pos_up", current_pen_settings()["pen_pos_up"]),
+    }
+
+    for layer in job.get("layers") or []:
+        input_svg = Path(layer["input_svg"])
+        digest_svg = Path(layer.get("plot_digest_svg") or input_svg.parent / "plot_digest.svg")
+        svg_metrics = layer.get("svg_metrics") or validate_svg_file(input_svg)
+        analysis_origin = plot_origin_for_layer_metrics(svg_metrics) or start_home
+        try:
+            analysis = analyse_layer_for_ink_well(
+                input_svg,
+                digest_svg,
+                job_settings=job_settings,
+                home=analysis_origin,
+                well=well_snapshot,
+                dip_interval_s=interval_s,
+            )
+            layer["svg_metrics"] = svg_metrics
+            layer["plot_digest_svg"] = str(digest_svg)
+            layer["ink_analysis"] = analysis
+            prepare_auto_dip_layer(layer, analysis)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    job["ink_well"] = well_snapshot
+    job["plot_start_position"] = start_home
+    job["auto_dip_enabled"] = True
+    job["dip_interval_s"] = interval_s
+    job["dip_count"] = 0
+    job["dip_failure"] = None
+    job["operator_message"] = f"Automatic ink dipping enabled before plot start; interval {interval_s:g}s."
+
+
 def run_control_command(cmd: list[str]) -> dict:
     require_hardware_idle()
     with hardware_lock:
@@ -2914,6 +2982,35 @@ def update_job_dip_interval(
         "dip_interval_s": interval_s,
         "message": jobs[job_id]["operator_message"],
     }
+
+
+@app.post("/jobs/{job_id}/auto_dip")
+def update_job_auto_dip(
+    job_id: str,
+    payload: dict = Body(default={}),
+    x_plotter_token: Optional[str] = Header(default=None),
+):
+    check_token(x_plotter_token)
+    enabled = resolve_auto_dip_flag(payload.get("auto_dip_enabled", payload.get("enabled", False)))
+    interval_s = payload.get("dip_interval_s")
+    if enabled and interval_s is None:
+        interval_s = current_plot_settings().get("dip_interval_s")
+
+    with jobs_lock:
+        job = jobs.get(job_id)
+        if not job:
+            raise HTTPException(status_code=404, detail="Job not found")
+        configure_job_auto_dip(job, enabled=enabled, dip_interval_s=interval_s)
+        save_job_unlocked(job_id)
+        return {
+            "ok": True,
+            "job_id": job_id,
+            "status": job.get("status"),
+            "auto_dip_enabled": job.get("auto_dip_enabled", False),
+            "dip_interval_s": job.get("dip_interval_s"),
+            "dip_estimates": layer_dip_estimates(job.get("layers") or []),
+            "message": job.get("operator_message"),
+        }
 
 
 @app.post("/jobs/clear")
