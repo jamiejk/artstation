@@ -48,8 +48,8 @@ analysis, auto-dip checkpoint SVG preparation, and stable progress-file
 replacement. Job queue state and operator decisions remain in `server.py`.
 
 Runtime JSON persistence lives in `server/state_store.py`: atomic JSON writes,
-runtime JSON reads, job metadata paths, and log-tail reads. Validation and
-state-transition rules remain in `server.py`.
+runtime JSON reads, job metadata paths, metadata deletion, and log-tail reads.
+Validation and state-transition rules remain in `server.py`.
 
 Job continuation, paused-job resume, and dip-failure recovery workflows live in
 `server/job_runner.py`. The runner receives a small context from `server.py` so
@@ -101,3 +101,10 @@ Layer resume state is kept in each layer directory as a stable `progress.svg`.
 When an AxiDraw resume produces updated progress, the server writes it to
 `progress.next.svg` and then replaces `progress.svg`; it does not create a new
 timestamped progress file for every resume.
+
+Job history persistence is metadata-driven. Each visible job is reloaded from
+its saved `job.json` record. Clearing stopped jobs with the default
+`keep_files=true` removes only that metadata record, leaving layer artifacts and
+logs in place while preventing the job from reappearing after browser refresh or
+service restart. Full deletion (`keep_files=false`) removes the job directory
+and associated log as well.

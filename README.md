@@ -68,6 +68,8 @@ curl -H "X-Plotter-Token: $PLOTTER_TOKEN" \
 
 The worker waits for local operator confirmation before the first layer and between layers. Uploaded SVG dimensions must fit within `MAX_PLOTTER_WIDTH_MM` and `MAX_PLOTTER_HEIGHT_MM`.
 
+The **Clear stopped jobs** button removes completed, failed, cancelled, interrupted, paused, and dip-failed jobs from the server view permanently. By default it preserves job artifacts and logs on disk but deletes each cleared job's `job.json` metadata record, so cleared jobs do not reappear after a refresh or service restart.
+
 For dip pens and brushes, use the **Ink Well** panel to save the centre, keep-out radius, clearance servo position, dip depth, dwell times, and optional pickup circles. Pickup circles are small pen-down circles run inside the well after dipping; the default is 3 circles at 10 mm diameter, run at 60 mm/s. A successful test cycle is required before the well can be marked installed. While installed, every upload and rerun is checked against the keep-out circle, including pen-up travel.
 
 Enable **Automatic ink dipping** when uploading a job and set the active plotting interval. The server prepares an AxiDraw plot digest, schedules dips only between complete strokes, and reports the estimated dip count and longest uninterrupted stroke. Each enabled layer dips once before drawing. Existing AxiDraw programmatic-pause layers are rejected for automatic-dip jobs.
