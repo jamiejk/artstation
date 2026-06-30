@@ -92,6 +92,7 @@ position_offset = {"x_mm": 0.0, "y_mm": 0.0}
 position_current: dict | None = None
 home_position: dict | None = None
 position_calibration_id = uuid.uuid4().hex
+position_calibration_enabled = True
 pen_settings_lock = threading.RLock()
 pen_settings = {"pen_pos_up": 65, "pen_pos_down": 35}
 AXIDRAW_PEN_POSITION_MIN = 0
@@ -131,6 +132,7 @@ PAPER_SIZES_MM = {
 paper_settings_lock = threading.RLock()
 paper_settings = {
     "state_version": 1,
+    "enabled": True,
     "size": "A3",
     "orientation": "portrait",
     "top_right": None,
@@ -314,7 +316,7 @@ def now() -> float:
 
 
 def load_position_offset() -> None:
-    global position_offset, position_current, home_position, position_calibration_id
+    global position_offset, position_current, home_position, position_calibration_id, position_calibration_enabled
     try:
         data = state_store.read_json(POSITION_PATH)
         if data is None:
@@ -330,6 +332,7 @@ def load_position_offset() -> None:
         if isinstance(data.get("calibration_id"), str) and data["calibration_id"]:
             position_calibration_id = data["calibration_id"]
             has_calibration_id = True
+        position_calibration_enabled = bool(data.get("calibration_enabled", True))
         current = data.get("current_position")
         if isinstance(current, dict):
             position_current = {
@@ -354,6 +357,7 @@ def save_position_offset_unlocked() -> None:
         "x_mm": position_offset["x_mm"],
         "y_mm": position_offset["y_mm"],
         "calibration_id": position_calibration_id,
+        "calibration_enabled": position_calibration_enabled,
     }
     if position_current is not None:
         data["current_position"] = dict(position_current)
@@ -474,6 +478,7 @@ def validate_paper_settings(settings: dict) -> dict:
     orientation = str(settings.get("orientation") or "portrait").lower()
     candidate = {
         "state_version": 1,
+        "enabled": bool(settings.get("enabled", True)),
         "size": size,
         "orientation": orientation,
         "top_right": settings.get("top_right"),
@@ -494,6 +499,7 @@ def load_paper_settings() -> None:
         defaults = validate_paper_settings(
             {
                 "state_version": 1,
+                "enabled": True,
                 "size": "A3",
                 "orientation": "portrait",
                 "top_right": None,
@@ -921,6 +927,8 @@ def job_plot_footprint(job: dict) -> dict | None:
 
 def job_plot_origin_for_paper(job: dict, paper: dict | None = None) -> dict | None:
     paper = paper or current_paper_settings()
+    if not paper.get("enabled", True):
+        return None
     top_right = paper.get("top_right")
     footprint = job_plot_footprint(job)
     if not top_right or not footprint:
@@ -1759,6 +1767,7 @@ def overlay_live_hardware_fields(state: dict) -> dict:
         raw_xy_mm = result.get("raw_position_estimate")
         result["position_offset"] = dict(position_offset)
         result["position_calibration_id"] = position_calibration_id
+        result["position_calibration_enabled"] = position_calibration_enabled
         result["home_position"] = dict(home_position) if home_position is not None else None
         result["position_source"] = "software" if position_current is not None else "step_counter"
         if position_current is not None:
@@ -3373,7 +3382,7 @@ def plotter_paper_update(
     require_localhost(request)
     check_token(x_plotter_token)
 
-    editable = {"size", "orientation", "top_right"}
+    editable = {"enabled", "size", "orientation", "top_right"}
     unknown = set(payload) - editable - {"top_right_from_current"}
     if unknown:
         raise HTTPException(status_code=400, detail=f"Unknown paper fields: {', '.join(sorted(unknown))}")
@@ -3712,6 +3721,35 @@ def plotter_set_position(
         "home_reset": reset_home,
         "position_source": "software",
     }
+
+
+@app.post("/plotter/position/calibration")
+def plotter_position_calibration_toggle(
+    request: Request,
+    payload: dict = Body(...),
+    x_plotter_token: Optional[str] = Header(default=None),
+):
+    require_localhost(request)
+    check_token(x_plotter_token)
+    enabled = bool(payload.get("enabled"))
+    acknowledged = bool(payload.get("acknowledge_unsafe"))
+    if not enabled and not acknowledged:
+        raise HTTPException(
+            status_code=400,
+            detail="Disabling plot-bed calibration may make absolute moves unsafe; acknowledge_unsafe is required.",
+        )
+    global position_calibration_enabled
+    with position_lock:
+        position_calibration_enabled = enabled
+        save_position_offset_unlocked()
+        return {
+            "ok": True,
+            "calibration_enabled": position_calibration_enabled,
+            "position_calibration_id": position_calibration_id,
+            "position_estimate": dict(position_current) if position_current is not None else None,
+            "home_position": dict(home_position) if home_position is not None else None,
+            "message": "Plot-bed calibration enabled." if enabled else "Plot-bed calibration disabled; saved calibration is retained but absolute moves may be unsafe.",
+        }
 
 
 @app.post("/plotter/home/return")

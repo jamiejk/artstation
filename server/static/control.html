@@ -72,6 +72,52 @@
 
     .section-body { padding: 12px; }
 
+    .module-switch {
+      display: inline-flex;
+      align-items: center;
+      gap: 7px;
+      font-size: 11px;
+      color: var(--muted);
+      user-select: none;
+    }
+
+    .module-switch input {
+      position: absolute;
+      opacity: 0;
+      pointer-events: none;
+    }
+
+    .switch-track {
+      width: 42px;
+      height: 22px;
+      border-radius: 999px;
+      background: #d0d5dd;
+      position: relative;
+      transition: background 120ms ease;
+      box-shadow: inset 0 0 0 1px rgba(16, 24, 40, 0.08);
+    }
+
+    .switch-track::after {
+      content: "";
+      position: absolute;
+      top: 3px;
+      left: 3px;
+      width: 16px;
+      height: 16px;
+      border-radius: 50%;
+      background: #fff;
+      box-shadow: var(--shadow);
+      transition: transform 120ms ease;
+    }
+
+    .module-switch input:checked + .switch-track {
+      background: var(--accent);
+    }
+
+    .module-switch input:checked + .switch-track::after {
+      transform: translateX(20px);
+    }
+
     .stack {
       display: grid;
       gap: 14px;
@@ -628,11 +674,6 @@
             <button id="returnHome">Home</button>
             <button id="enableMotors">Motors On</button>
             <button id="disableMotors">Motors Off</button>
-            <button
-              id="calibrateTopLeft"
-              class="calibrate"
-              title="Move the carriage to the top-left corner of the bed, nearest the PCB marker, then click to set XY = 0,914.4 mm."
-            >Calibrate</button>
             <button id="operatorContinue" class="primary">Continue</button>
             <button id="pauseActive" class="danger">Pause Job</button>
           </div>
@@ -650,6 +691,28 @@
               <button id="penDownPlus" title="Raise the pen-down servo value by 5">+</button>
             </div>
           </div>
+        </div>
+      </section>
+
+      <section>
+        <div class="section-head">
+          <span>Plot Bed Calibration</span>
+          <label class="module-switch" title="Toggle use of saved plot-bed calibration">
+            <span>OFF</span>
+            <input id="calibrationEnabled" type="checkbox" checked>
+            <span class="switch-track"></span>
+            <span>ON</span>
+          </label>
+        </div>
+        <div class="section-body">
+          <div class="toolbar">
+            <button
+              id="calibrateTopLeft"
+              class="calibrate"
+              title="Move the carriage to the top-left corner of the bed, nearest the PCB marker, then click to set XY = 0,914.4 mm."
+            >Set Bed Top Left</button>
+          </div>
+          <div class="spec-note" id="calibrationStatus">Saved bed calibration is used for absolute moves.</div>
         </div>
       </section>
 
@@ -703,7 +766,15 @@
       </section>
 
       <section>
-        <div class="section-head">Ink Well</div>
+        <div class="section-head">
+          <span>Ink Well</span>
+          <label class="module-switch" title="Toggle ink-well keep-out and auto-dip readiness checks">
+            <span>OFF</span>
+            <input id="wellEnabled" type="checkbox">
+            <span class="switch-track"></span>
+            <span>ON</span>
+          </label>
+        </div>
         <div class="section-body">
           <div class="pen-grid">
             <div class="pen-control">
@@ -777,7 +848,15 @@
       </section>
 
       <section>
-        <div class="section-head">Paper</div>
+        <div class="section-head">
+          <span>Paper</span>
+          <label class="module-switch" title="Toggle paper top-right/size use for job bounds and preview">
+            <span>OFF</span>
+            <input id="paperEnabled" type="checkbox" checked>
+            <span class="switch-track"></span>
+            <span>ON</span>
+          </label>
+        </div>
         <div class="section-body">
           <div class="pen-grid">
             <div class="pen-control">
@@ -1065,6 +1144,7 @@
 
     function paperPayload() {
       return {
+        enabled: Boolean($("paperEnabled") && $("paperEnabled").checked),
         size: $("paperSize").value,
         orientation: $("paperOrientation").value,
       };
@@ -1072,6 +1152,9 @@
 
     function applyPaper(paper) {
       state.paper = paper || {};
+      if ($("paperEnabled") && paper && paper.enabled != null) {
+        $("paperEnabled").checked = Boolean(paper.enabled);
+      }
       if ($("paperSize") && paper && paper.size && document.activeElement !== $("paperSize")) {
         $("paperSize").value = paper.size;
       }
@@ -1086,8 +1169,9 @@
         ? `${paper.size || "-"} ${paper.orientation || "-"} · ${Number(paper.width_mm).toFixed(1)}×${Number(paper.height_mm).toFixed(1)} mm`
         : "not configured";
       if ($("paperStatus")) {
-        $("paperStatus").textContent = `${sizeText} · top-right ${anchorText}`;
-        $("paperStatus").classList.toggle("warn", Boolean(topRight && !state.positionKnown));
+        const enabledText = paper && paper.enabled === false ? "OFF — saved values ignored" : "ON";
+        $("paperStatus").textContent = `${enabledText} · ${sizeText} · top-right ${anchorText}`;
+        $("paperStatus").classList.toggle("warn", Boolean(paper && paper.enabled !== false && topRight && !state.positionKnown));
       }
     }
 
@@ -1139,6 +1223,9 @@
       syncInput("wellDipCircleCount", well && well.dip_circle_count);
       syncInput("wellDipCircleDiameter", well && well.dip_circle_diameter_mm);
       syncInput("wellDripDwell", well && well.drip_dwell_ms);
+      if ($("wellEnabled") && well && well.installed != null) {
+        $("wellEnabled").checked = Boolean(well.installed);
+      }
       const centre = well && well.centre;
       const staleCalibration = Boolean(well && well.installed && inkWellStale(well));
       const centreText = centre ? `${Number(centre.x_mm).toFixed(1)}, ${Number(centre.y_mm).toFixed(1)} mm` : "not set";
@@ -1655,6 +1742,8 @@
       const positionSource = displayHardware.position_source || "-";
       const positionDisplayKnown = Boolean(pos);
       state.positionCalibrationId = displayHardware.position_calibration_id || null;
+      state.positionCalibrationEnabled = displayHardware.position_calibration_enabled !== false;
+      if ($("calibrationEnabled")) $("calibrationEnabled").checked = state.positionCalibrationEnabled;
       state.positionKnown = positionDisplayKnown && (positionSource === "software" || Boolean(home));
       if (pos) {
         state.currentPosition = {
@@ -1677,7 +1766,7 @@
         ["Pause Button", displayHardware.button_pressed === true ? "pressed" : displayHardware.button_pressed === false ? "clear" : "-"],
         ["Steps", `${steps.axis_1 != null ? steps.axis_1 : "-"}, ${steps.axis_2 != null ? steps.axis_2 : "-"}`],
         ["XY", positionDisplayKnown ? `${displayX.toFixed(2)} mm, ${displayY.toFixed(2)} mm` : "-"],
-        ["Calibration", state.positionKnown ? "ready" : "required — set current position/home before jogging"],
+        ["Calibration", state.positionCalibrationEnabled ? (state.positionKnown ? "ON — ready" : "ON — required") : "OFF — saved calibration retained; absolute moves may be unsafe"],
         ["XY Source", positionSource],
         ["Raw XY", `${rawX} mm, ${rawY} mm`],
         ["Offset", `${Number(offset.x_mm || 0).toFixed(2)} mm, ${Number(offset.y_mm || 0).toFixed(2)} mm`],
@@ -1692,6 +1781,12 @@
         ["Known Jobs", state.jobs.length],
       ];
       $("stateList").innerHTML = rows.map(([k, v]) => `<dt>${escapeHtml(k)}</dt><dd>${escapeHtml(v)}</dd>`).join("");
+      if ($("calibrationStatus")) {
+        $("calibrationStatus").textContent = state.positionCalibrationEnabled
+          ? "ON — saved bed calibration is active for absolute moves, Home, paper, and ink-well setup."
+          : "OFF — saved calibration is retained, but absolute moves may be unsafe until you turn it back on or recalibrate.";
+        $("calibrationStatus").classList.toggle("warn", !state.positionCalibrationEnabled);
+      }
 
       if (!state.draggingHead) {
         if (positionDisplayKnown) {
@@ -1743,7 +1838,8 @@
     function applySheetOverlay(home) {
       const marker = $("sheetMarker");
       const paper = state.lastHardware && state.lastHardware.paper || state.paper || state.config && state.config.paper || null;
-      const calibratedPaper = paper && paper.top_right && paper.width_mm && paper.height_mm;
+      const paperEnabled = !paper || paper.enabled !== false;
+      const calibratedPaper = paperEnabled && paper && paper.top_right && paper.width_mm && paper.height_mm;
       const job = footprintJob();
       const footprint = plotFootprint(job);
       if (!calibratedPaper && (!home || !footprint)) {
@@ -2094,6 +2190,18 @@
           })
           .catch((error) => setMessage(error.message));
       });
+      $("wellEnabled").addEventListener("change", () => {
+        const enabled = $("wellEnabled").checked;
+        withButtonFeedback("wellInstalled", "Updating ink-well switch…", () => post("/plotter/ink_well", { installed: enabled }))
+          .then((result) => {
+            applyInkWell(result.ink_well);
+            setMessage(result.ink_well.installed ? "Ink Well ON: keep-out is active for uploads/reruns." : "Ink Well OFF: saved setup retained and ignored by uploads/reruns.");
+          })
+          .catch((error) => {
+            $("wellEnabled").checked = !enabled;
+            setMessage(error.message);
+          });
+      });
       $("autoDip").addEventListener("change", renderAutoDipStatus);
       $("dipInterval").addEventListener("input", renderAutoDipStatus);
       $("wellSaveAutoDipDefault").addEventListener("click", () => {
@@ -2176,6 +2284,39 @@
       $("paperOrientation").addEventListener("change", () => {
         setMessage("Saving paper orientation…");
         savePaper().then(() => refresh()).catch((error) => setMessage(error.message));
+      });
+      $("paperEnabled").addEventListener("change", () => {
+        const enabled = $("paperEnabled").checked;
+        setMessage(enabled ? "Turning Paper ON…" : "Turning Paper OFF…");
+        savePaper({ enabled })
+          .then(() => {
+            setMessage(enabled ? "Paper ON: saved size/top-right will affect previews and new jobs." : "Paper OFF: saved paper values retained and ignored.");
+            refresh();
+          })
+          .catch((error) => {
+            $("paperEnabled").checked = !enabled;
+            setMessage(error.message);
+          });
+      });
+      $("calibrationEnabled").addEventListener("change", () => {
+        const enabled = $("calibrationEnabled").checked;
+        if (!enabled && !confirm("Switch off plot-bed calibration? Saved calibration will be retained, but absolute moves, Home, paper, and ink-well setup may be unsafe if used. Only continue if you understand the risk.")) {
+          $("calibrationEnabled").checked = true;
+          return;
+        }
+        withButtonFeedback(
+          "calibrateTopLeft",
+          enabled ? "Turning calibration ON…" : "Turning calibration OFF…",
+          () => post("/plotter/position/calibration", { enabled, acknowledge_unsafe: !enabled })
+        )
+          .then((result) => {
+            setMessage(result.message || (enabled ? "Plot-bed calibration ON." : "Plot-bed calibration OFF."));
+            refresh();
+          })
+          .catch((error) => {
+            $("calibrationEnabled").checked = !enabled;
+            setMessage(error.message);
+          });
       });
       document.addEventListener("click", (event) => {
         const button = event.target.closest("[data-dip-action]");

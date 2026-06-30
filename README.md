@@ -68,6 +68,8 @@ curl -H "X-Plotter-Token: $PLOTTER_TOKEN" \
 
 The worker waits for local operator confirmation before the first layer and between layers. Uploaded SVG dimensions must fit within `MAX_PLOTTER_WIDTH_MM` and `MAX_PLOTTER_HEIGHT_MM`.
 
+Several setup panels have ON/OFF switches. OFF keeps the saved values but stops that module affecting new work: Paper OFF ignores saved paper size/top-right for previews and job alignment, and Ink Well OFF ignores the saved keep-out zone. Plot Bed Calibration OFF also keeps the saved calibration, but the browser asks for confirmation because absolute moves, Home, paper, and ink-well setup may be unsafe when calibration is not trusted.
+
 The **Clear stopped jobs** button removes completed, failed, cancelled, interrupted, paused, and dip-failed jobs from the server view permanently. By default it preserves job artifacts and logs on disk but deletes each cleared job's `job.json` metadata record, so cleared jobs do not reappear after a refresh or service restart.
 
 For dip pens and brushes, use the **Ink Well** panel to save the centre, keep-out radius, clearance servo position, dip depth, dwell times, and optional pickup circles. Pickup circles are small pen-down circles run inside the well after dipping; the default is 3 circles at 10 mm diameter, run at 60 mm/s. A successful test cycle is required before the ink-well check can be enabled. While the check is enabled, every upload and rerun is checked against the keep-out circle, including pen-up travel. Disable the ink-well check when the well is not physically installed or not needed; the saved setup is retained, but upload/rerun keep-out validation ignores it.

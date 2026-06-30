@@ -151,6 +151,30 @@ class PaperSettingsTests(unittest.TestCase):
         self.assertEqual(origin["y_mm"], 725.15)
         self.assertEqual(origin["anchor"], "paper_top_right")
 
+    def test_disabled_paper_keeps_settings_but_does_not_align_job(self):
+        job = {
+            "layers": [
+                {
+                    "svg_metrics": {
+                        "width_mm": 291.3,
+                        "height_mm": 255.522,
+                    }
+                }
+            ]
+        }
+        paper = server.validate_paper_settings(
+            {
+                "enabled": False,
+                "size": "A3",
+                "orientation": "portrait",
+                "top_right": {"x_mm": 502.6125, "y_mm": 725.15},
+            }
+        )
+
+        self.assertFalse(paper["enabled"])
+        self.assertEqual(paper["top_right"], {"x_mm": 502.6125, "y_mm": 725.15})
+        self.assertIsNone(server.job_plot_origin_for_paper(job, paper))
+
     def test_job_plot_origin_rejects_plot_larger_than_paper(self):
         job = {
             "layers": [
@@ -408,6 +432,31 @@ class HomePositionTests(unittest.TestCase):
 
         self.assertEqual(server.current_home_position(), {"x_mm": 0.0, "y_mm": server.BED_HEIGHT_MM})
         self.assertEqual(server.current_software_position(), {"x_mm": 125.0, "y_mm": 300.0})
+
+    def test_disabling_position_calibration_requires_acknowledgement(self):
+        request = mock.Mock()
+        request.client.host = "127.0.0.1"
+
+        with self.assertRaises(HTTPException) as raised:
+            server.plotter_position_calibration_toggle(
+                request,
+                {"enabled": False},
+                x_plotter_token="test-token",
+            )
+        self.assertEqual(raised.exception.status_code, 400)
+
+        result = server.plotter_position_calibration_toggle(
+            request,
+            {"enabled": False, "acknowledge_unsafe": True},
+            x_plotter_token="test-token",
+        )
+        self.assertFalse(result["calibration_enabled"])
+
+        server.plotter_position_calibration_toggle(
+            request,
+            {"enabled": True},
+            x_plotter_token="test-token",
+        )
 
     def test_return_home_uses_direct_ebb_motion(self):
         with server.position_lock:
