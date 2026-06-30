@@ -740,7 +740,7 @@
             <button id="wellSave">Save Setup</button>
             <button id="wellTest" class="calibrate">Run Test Cycle</button>
             <button id="wellConfirmTest">Confirm Test Passed</button>
-            <button id="wellInstalled">Mark Installed</button>
+            <button id="wellInstalled">Enable Ink Well Check</button>
           </div>
           <div class="job-controls" id="wellAutoDipControls">
             <div class="toolbar">
@@ -1149,9 +1149,9 @@
       const circleText = `${Number(circleCount)}×${Number(circleDiameter).toFixed(1)} mm circles`;
       $("wellStatus").textContent = staleCalibration
         ? `Centre ${centreText} is stale after Home/current-position calibration changed. Re-position over the well and press Set Centre Here.`
-        : `Centre ${centreText} · pickup ${circleText} · test ${well && well.test_passed ? "passed" : "required"} · ${well && well.installed ? "installed" : "not installed"}`;
+        : `Centre ${centreText} · pickup ${circleText} · test ${well && well.test_passed ? "passed" : "required"} · ink-well check ${well && well.installed ? "enabled" : "disabled"}`;
       $("wellStatus").classList.toggle("warn", staleCalibration);
-      $("wellInstalled").textContent = well && well.installed ? "Mark Removed" : "Mark Installed";
+      $("wellInstalled").textContent = well && well.installed ? "Disable Ink Well Check" : "Enable Ink Well Check";
       const marker = $("wellMarker");
       if (centre && Number(well.radius_mm) > 0) {
         const diameterX = (Number(well.radius_mm) * 2 / state.bed.width) * 100;
@@ -2089,7 +2089,7 @@
         withButtonFeedback("wellInstalled", "Updating install state…", () => post("/plotter/ink_well", { installed: !Boolean(state.inkWell && state.inkWell.installed) }))
           .then((result) => {
             applyInkWell(result.ink_well);
-            setMessage(result.ink_well.installed ? "Ink well marked installed; keep-out is active for every upload." : "Ink well marked removed.");
+            setMessage(result.ink_well.installed ? "Ink well check enabled; keep-out is active for every upload/rerun." : "Ink well check disabled; saved setup is retained but uploads/reruns will ignore the well.");
           })
           .catch((error) => setMessage(error.message));
       });

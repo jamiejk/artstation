@@ -757,6 +757,38 @@ class InkWellSettingsTests(unittest.TestCase):
         self.assertFalse(result["ink_well"]["test_passed"])
         self.assertIsNone(result["ink_well"]["tested_at"])
 
+    def test_disabling_ink_well_check_preserves_setup(self):
+        request = mock.Mock()
+        request.client.host = "127.0.0.1"
+        with server.ink_well_settings_lock:
+            server.ink_well_settings.update(
+                {
+                    "installed": True,
+                    "centre": {"x_mm": 10, "y_mm": 20},
+                    "radius_mm": 15,
+                    "clearance_pos": 80,
+                    "dip_pos": 20,
+                    "dwell_ms": 1000,
+                    "drip_dwell_ms": 0,
+                    "dip_circle_count": 3,
+                    "dip_circle_diameter_mm": 10,
+                    "calibration_id": server.position_calibration_id,
+                    "test_passed": True,
+                    "tested_at": 123,
+                }
+            )
+
+        result = server.plotter_ink_well_update(
+            request,
+            {"installed": False},
+            x_plotter_token="test-token",
+        )
+
+        self.assertFalse(result["ink_well"]["installed"])
+        self.assertEqual(result["ink_well"]["centre"], {"x_mm": 10, "y_mm": 20})
+        self.assertEqual(result["ink_well"]["radius_mm"], 15.0)
+        self.assertTrue(result["ink_well"]["test_passed"])
+
     def test_plot_snapshot_is_independent_from_later_calibration_changes(self):
         settings = {
             "installed": True,
