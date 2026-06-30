@@ -1119,7 +1119,7 @@
       let text = enabled
         ? `Auto Dip default on: uploads without an explicit auto_dip value will dip before plotting, then re-dip after about ${interval}s of pen-down plotting.`
         : "Auto Dip default off: uploads without an explicit auto_dip value will not dip before or during plotting.";
-      if (!ready) {
+      if (enabled && !ready) {
         text += " Ink well is not ready: run/confirm the test and mark it installed after setting the centre.";
       }
       $("autoDipStatus").textContent = text;
@@ -1140,16 +1140,17 @@
       syncInput("wellDipCircleDiameter", well && well.dip_circle_diameter_mm);
       syncInput("wellDripDwell", well && well.drip_dwell_ms);
       const centre = well && well.centre;
-      const staleCalibration = Boolean(
-        inkWellStale(well)
-      );
+      const staleCalibration = Boolean(well && well.installed && inkWellStale(well));
       const centreText = centre ? `${Number(centre.x_mm).toFixed(1)}, ${Number(centre.y_mm).toFixed(1)} mm` : "not set";
       const circleCount = well && well.dip_circle_count != null ? well.dip_circle_count : 0;
       const circleDiameter = well && well.dip_circle_diameter_mm != null ? well.dip_circle_diameter_mm : 0;
       const circleText = `${Number(circleCount)}×${Number(circleDiameter).toFixed(1)} mm circles`;
+      const staleNote = !well || well.installed || !inkWellStale(well)
+        ? ""
+        : " · saved centre stale; ignored while disabled";
       $("wellStatus").textContent = staleCalibration
-        ? `Centre ${centreText} is stale after Home/current-position calibration changed. Re-position over the well and press Set Centre Here.`
-        : `Centre ${centreText} · pickup ${circleText} · test ${well && well.test_passed ? "passed" : "required"} · ink-well check ${well && well.installed ? "enabled" : "disabled"}`;
+        ? `Centre ${centreText} is stale after Home/current-position calibration changed. Re-position over the well and press Set Centre Here, or disable the ink-well check.`
+        : `Centre ${centreText} · pickup ${circleText} · test ${well && well.test_passed ? "passed" : "required"} · ink-well check ${well && well.installed ? "enabled" : "disabled"}${staleNote}`;
       $("wellStatus").classList.toggle("warn", staleCalibration);
       $("wellInstalled").textContent = well && well.installed ? "Disable Ink Well Check" : "Enable Ink Well Check";
       const marker = $("wellMarker");
