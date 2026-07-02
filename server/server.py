@@ -4,7 +4,6 @@ from pathlib import Path
 from typing import Optional, List
 from types import SimpleNamespace
 import os
-import re
 import time
 import uuid
 import shutil
@@ -14,20 +13,27 @@ import subprocess
 import signal
 import json
 import math
-import xml.etree.ElementTree as ET
 import serial
 
 try:
     from server import hardware
+    from server import job_model
     from server import job_runner
     from server import plot_execution
+    from server import positioning
     from server import state_store
+    from server import settings as settings_utils
+    from server import svg_utils
     from server import timing_log
 except ImportError:
     import hardware
+    import job_model
     import job_runner
     import plot_execution
+    import positioning
     import state_store
+    import settings as settings_utils
+    import svg_utils
     import timing_log
 
 try:
@@ -95,8 +101,8 @@ position_calibration_id = uuid.uuid4().hex
 position_calibration_enabled = True
 pen_settings_lock = threading.RLock()
 pen_settings = {"pen_pos_up": 65, "pen_pos_down": 35}
-AXIDRAW_PEN_POSITION_MIN = 0
-AXIDRAW_PEN_POSITION_MAX = 100
+AXIDRAW_PEN_POSITION_MIN = settings_utils.AXIDRAW_PEN_POSITION_MIN
+AXIDRAW_PEN_POSITION_MAX = settings_utils.AXIDRAW_PEN_POSITION_MAX
 plot_settings_lock = threading.RLock()
 plot_settings = {
     "speed_pendown": 15,
@@ -122,13 +128,7 @@ ink_well_settings = {
     "test_passed": False,
     "tested_at": None,
 }
-PAPER_SIZES_MM = {
-    "A0": {"width_mm": 841.0, "height_mm": 1189.0},
-    "A1": {"width_mm": 594.0, "height_mm": 841.0},
-    "A2": {"width_mm": 420.0, "height_mm": 594.0},
-    "A3": {"width_mm": 297.0, "height_mm": 420.0},
-    "A4": {"width_mm": 210.0, "height_mm": 297.0},
-}
+PAPER_SIZES_MM = settings_utils.PAPER_SIZES_MM
 paper_settings_lock = threading.RLock()
 paper_settings = {
     "state_version": 1,
@@ -163,16 +163,24 @@ RUNNING_STATUSES = {
     "dipping",
 }
 
+PLOT_PREVIEW_STATUSES = {
+    "queued",
+    "queued_for_operator",
+    "waiting_for_operator",
+    "queued_for_resume",
+    "running",
+    "paused",
+    "dipping",
+    "dip_failed",
+}
 
-_LENGTH_RE = re.compile(r"^\s*([-+]?[0-9]*\.?[0-9]+)\s*([a-zA-Z]*)\s*$")
-_UNIT_TO_MM = {
-    "": 1.0,
-    "mm": 1.0,
-    "cm": 10.0,
-    "in": 25.4,
-    "pt": 25.4 / 72.0,
-    "pc": 25.4 / 6.0,
-    "px": 25.4 / 96.0,
+JOB_DELETE_BLOCKED_STATUSES = {
+    "queued",
+    "queued_for_operator",
+    "waiting_for_operator",
+    "queued_for_resume",
+    "running",
+    "dipping",
 }
 
 
@@ -198,70 +206,37 @@ def cancel_job_record(job: dict, *, reason: str) -> bool:
     return True
 
 
-def validate_svg_text(
-    svg_text: str,
-    *,
-    max_width_mm: float,
-    max_height_mm: float,
-) -> dict:
-    try:
-        root = ET.fromstring(svg_text)
-    except ET.ParseError as exc:
-        raise ValueError(f"Invalid SVG XML: {exc}") from exc
+def delete_job_record_unlocked(job_id: str, *, keep_files: bool = True) -> dict:
+    job = jobs.get(job_id)
+    if not job:
+        raise HTTPException(status_code=404, detail="Job not found")
 
-    if _local_name(root.tag) != "svg":
-        raise ValueError("Uploaded file is not an SVG document")
+    status = job.get("status")
+    if status in JOB_DELETE_BLOCKED_STATUSES:
+        raise HTTPException(status_code=400, detail=f"Job cannot be deleted from status {status!r}")
 
-    view_box = _parse_view_box(root.attrib.get("viewBox", ""))
-    width_mm = _length_to_mm(root.attrib.get("width"), fallback=view_box[2] if view_box else None)
-    height_mm = _length_to_mm(root.attrib.get("height"), fallback=view_box[3] if view_box else None)
+    del jobs[job_id]
 
-    if width_mm is None or height_mm is None or width_mm <= 0 or height_mm <= 0:
-        raise ValueError("SVG must define positive width and height or a usable viewBox")
+    if keep_files:
+        state_store.delete_job_metadata(JOBS_DIR, job_id)
+    else:
+        shutil.rmtree(job_dir(job_id), ignore_errors=True)
+        log_path = Path(job.get("log_path", ""))
+        if log_path.exists() and log_path.is_file():
+            log_path.unlink()
 
-    if width_mm > max_width_mm or height_mm > max_height_mm:
-        raise ValueError(
-            f"SVG dimensions {width_mm:.3f}x{height_mm:.3f}mm exceeds plotter bounds "
-            f"{max_width_mm:.3f}x{max_height_mm:.3f}mm"
-        )
+    return {"id": job_id, "status": status}
 
-    return {"width_mm": round(width_mm, 4), "height_mm": round(height_mm, 4)}
+
+validate_svg_text = svg_utils.validate_svg_text
 
 
 def validate_svg_file(path: Path) -> dict:
-    return validate_svg_text(
-        path.read_text(encoding="utf-8", errors="replace"),
+    return svg_utils.validate_svg_file(
+        path,
         max_width_mm=MAX_PLOTTER_WIDTH_MM,
         max_height_mm=MAX_PLOTTER_HEIGHT_MM,
     )
-
-
-def _length_to_mm(value: str | None, *, fallback: float | None = None) -> float | None:
-    if value is None or value == "":
-        return fallback
-    match = _LENGTH_RE.match(value)
-    if not match:
-        raise ValueError(f"Unsupported SVG length: {value!r}")
-    number = float(match.group(1))
-    unit = match.group(2).lower()
-    if unit not in _UNIT_TO_MM:
-        raise ValueError(f"Unsupported SVG length unit: {unit!r}")
-    return number * _UNIT_TO_MM[unit]
-
-
-def _parse_view_box(value: str) -> tuple[float, float, float, float] | None:
-    parts = value.replace(",", " ").split()
-    if len(parts) != 4:
-        return None
-    try:
-        x, y, width, height = (float(part) for part in parts)
-    except ValueError:
-        return None
-    return x, y, width, height
-
-
-def _local_name(tag: str) -> str:
-    return tag.rsplit("}", 1)[-1]
 
 
 PLOTTER_TOKEN = required_plotter_token()
@@ -279,6 +254,7 @@ DEFAULT_PEN_RATE_RAISE = int(os.environ.get("PLOTTER_PEN_RATE_RAISE", "75"))
 DEFAULT_PEN_RATE_LOWER = int(os.environ.get("PLOTTER_PEN_RATE_LOWER", "50"))
 THEORETICAL_MAX_XY_SPEED_MM_S = float(os.environ.get("PLOTTER_MAX_XY_SPEED_MM_S", "280"))
 SAFE_MANUAL_MAX_XY_SPEED_MM_S = float(os.environ.get("PLOTTER_SAFE_MANUAL_MAX_XY_SPEED_MM_S", "200"))
+DEFAULT_INK_WELL_TRAVEL_SPEED_MM_S = float(os.environ.get("PLOTTER_INK_WELL_TRAVEL_SPEED_MM_S", "120"))
 MOTOR_RESOLUTION_CACHE_TTL_S = float(os.environ.get("PLOTTER_MOTOR_RESOLUTION_CACHE_TTL_S", "10"))
 TELEMETRY_POLL_INTERVAL_S = float(os.environ.get("PLOTTER_TELEMETRY_POLL_INTERVAL_S", "0.5"))
 TELEMETRY_SERIAL_TIMEOUT_S = float(os.environ.get("PLOTTER_TELEMETRY_SERIAL_TIMEOUT_S", "0.15"))
@@ -459,39 +435,15 @@ def apply_plot_settings_to_job(job: dict, settings: dict) -> None:
 
 
 def paper_dimensions(settings: dict) -> dict:
-    size = str(settings.get("size") or "A3").upper()
-    if size not in PAPER_SIZES_MM:
-        raise ValueError(f"Unsupported paper size: {size}")
-    orientation = str(settings.get("orientation") or "portrait").lower()
-    if orientation not in {"portrait", "landscape"}:
-        raise ValueError("Paper orientation must be portrait or landscape")
-    base = PAPER_SIZES_MM[size]
-    width = base["width_mm"]
-    height = base["height_mm"]
-    if orientation == "landscape":
-        width, height = height, width
-    return {"width_mm": width, "height_mm": height}
+    return settings_utils.paper_dimensions(settings)
 
 
 def validate_paper_settings(settings: dict) -> dict:
-    size = str(settings.get("size") or "A3").upper()
-    orientation = str(settings.get("orientation") or "portrait").lower()
-    candidate = {
-        "state_version": 1,
-        "enabled": bool(settings.get("enabled", True)),
-        "size": size,
-        "orientation": orientation,
-        "top_right": settings.get("top_right"),
-    }
-    dimensions = paper_dimensions(candidate)
-    top_right = candidate.get("top_right")
-    if top_right is not None:
-        if not isinstance(top_right, dict) or "x_mm" not in top_right or "y_mm" not in top_right:
-            raise ValueError("Paper top_right must contain x_mm and y_mm")
-        x_mm, y_mm = validate_bed_target(top_right["x_mm"], top_right["y_mm"])
-        candidate["top_right"] = {"x_mm": x_mm, "y_mm": y_mm}
-    candidate.update(dimensions)
-    return candidate
+    return settings_utils.validate_paper_settings(
+        settings,
+        bed_width_mm=BED_WIDTH_MM,
+        bed_height_mm=BED_HEIGHT_MM,
+    )
 
 
 def load_paper_settings() -> None:
@@ -540,6 +492,7 @@ def load_ink_well_settings() -> None:
             "dip_pos": None,
             "dwell_ms": 1000,
             "drip_dwell_ms": 0,
+            "travel_speed_mm_s": DEFAULT_INK_WELL_TRAVEL_SPEED_MM_S,
             "dip_circle_count": 3,
             "dip_circle_diameter_mm": 10.0,
             "calibration_id": None,
@@ -600,6 +553,12 @@ def validate_ink_well_settings(settings: dict, *, require_ready: bool = False) -
             raise ValueError(f"{key} must be between 0 and {maximum}")
         settings[key] = value
 
+    travel_speed_value = settings.get("travel_speed_mm_s")
+    travel_speed = DEFAULT_INK_WELL_TRAVEL_SPEED_MM_S if travel_speed_value is None else float(travel_speed_value)
+    if not math.isfinite(travel_speed) or not 1 <= travel_speed <= SAFE_MANUAL_MAX_XY_SPEED_MM_S:
+        raise ValueError(f"travel_speed_mm_s must be between 1 and {SAFE_MANUAL_MAX_XY_SPEED_MM_S:g}")
+    settings["travel_speed_mm_s"] = travel_speed
+
     circle_count_value = settings.get("dip_circle_count")
     circle_count = 3 if circle_count_value is None else int(circle_count_value)
     if not 0 <= circle_count <= 10:
@@ -649,6 +608,7 @@ def ink_well_plot_snapshot(settings: dict) -> dict:
         "dip_pos": settings["dip_pos"],
         "dwell_ms": settings["dwell_ms"],
         "drip_dwell_ms": settings["drip_dwell_ms"],
+        "travel_speed_mm_s": settings["travel_speed_mm_s"],
         "dip_circle_count": settings["dip_circle_count"],
         "dip_circle_diameter_mm": settings["dip_circle_diameter_mm"],
         "tested_at": settings["tested_at"],
@@ -656,81 +616,43 @@ def ink_well_plot_snapshot(settings: dict) -> dict:
 
 
 def validate_speed_setting(value: int, name: str) -> int:
-    value = int(value)
-    if not 1 <= value <= 100:
-        raise HTTPException(status_code=400, detail=f"{name} must be between 1 and 100")
-    return value
+    return settings_utils.validate_speed_setting(value, name)
 
 
 def validate_pen_position(value: int, name: str) -> int:
-    value = int(value)
-    if not AXIDRAW_PEN_POSITION_MIN <= value <= AXIDRAW_PEN_POSITION_MAX:
-        raise HTTPException(
-            status_code=400,
-            detail=f"{name} must be between {AXIDRAW_PEN_POSITION_MIN} and {AXIDRAW_PEN_POSITION_MAX}",
-        )
-    return value
+    return settings_utils.validate_pen_position(value, name)
 
 
 def validate_pen_delay_down(value: int) -> int:
-    value = int(value)
-    if not -500 <= value <= 500:
-        raise HTTPException(status_code=400, detail="pen_delay_down must be between -500 and 500 ms")
-    return value
+    return settings_utils.validate_pen_delay_down(value)
 
 
 def validate_pen_delay_up(value: int) -> int:
-    value = int(value)
-    if not -500 <= value <= 500:
-        raise HTTPException(status_code=400, detail="pen_delay_up must be between -500 and 500 ms")
-    return value
+    return settings_utils.validate_pen_delay_up(value)
 
 
 def validate_pen_rate_raise(value: int) -> int:
-    value = int(value)
-    if not 1 <= value <= 100:
-        raise HTTPException(status_code=400, detail="pen_rate_raise must be between 1 and 100")
-    return value
+    return settings_utils.validate_pen_rate_raise(value)
 
 
 def validate_dip_interval(value: float) -> float:
-    try:
-        value = float(value)
-    except (TypeError, ValueError) as exc:
-        raise HTTPException(status_code=400, detail="dip_interval_s must be a number") from exc
-    if not math.isfinite(value) or not 0.1 <= value <= 86400:
-        raise HTTPException(status_code=400, detail="dip_interval_s must be between 0.1 and 86400")
-    return round(value, 3)
+    return settings_utils.validate_dip_interval(value)
 
 
 def resolve_auto_dip_flag(*values) -> bool:
-    truthy = {"1", "true", "yes", "on", "y"}
-    for value in values:
-        if value is True:
-            return True
-        if isinstance(value, str) and value.strip().lower() in truthy:
-            return True
-    return False
+    return settings_utils.resolve_auto_dip_flag(*values)
 
 
 def auto_dip_flag_was_provided(*values) -> bool:
-    return any(value is not None for value in values)
+    return settings_utils.auto_dip_flag_was_provided(*values)
 
 
 def raw_xy_to_bed_xy(raw_xy: dict | None) -> dict | None:
-    if raw_xy is None:
-        return None
-    return {
-        "x_mm": -raw_xy["y_mm"],
-        "y_mm": -raw_xy["x_mm"],
-    }
+    return positioning.raw_xy_to_bed_xy(raw_xy)
 
 
 def bed_delta_to_raw_delta(x_mm: float, y_mm: float) -> dict:
-    return {
-        "x_mm": -y_mm,
-        "y_mm": -x_mm,
-    }
+    return positioning.bed_delta_to_raw_delta(x_mm, y_mm)
 
 
 def apply_position_offset(raw_xy: dict | None) -> dict | None:
@@ -755,18 +677,22 @@ def current_position_estimate(raw_xy: dict | None) -> dict | None:
 
 def set_current_position_unlocked(x_mm: float, y_mm: float) -> None:
     global position_current
-    position_current = {
-        "x_mm": max(0.0, min(BED_WIDTH_MM, float(x_mm))),
-        "y_mm": max(0.0, min(BED_HEIGHT_MM, float(y_mm))),
-    }
+    position_current = positioning.clamp_bed_position(
+        x_mm,
+        y_mm,
+        bed_width_mm=BED_WIDTH_MM,
+        bed_height_mm=BED_HEIGHT_MM,
+    )
 
 
 def set_home_position_unlocked(x_mm: float, y_mm: float) -> None:
     global home_position
-    home_position = {
-        "x_mm": max(0.0, min(BED_WIDTH_MM, float(x_mm))),
-        "y_mm": max(0.0, min(BED_HEIGHT_MM, float(y_mm))),
-    }
+    home_position = positioning.clamp_bed_position(
+        x_mm,
+        y_mm,
+        bed_width_mm=BED_WIDTH_MM,
+        bed_height_mm=BED_HEIGHT_MM,
+    )
 
 
 def current_home_position() -> dict:
@@ -841,6 +767,7 @@ def load_jobs() -> None:
         for path in state_store.iter_job_meta_paths(JOBS_DIR):
             try:
                 job_id, job = state_store.read_job_meta(path)
+                changed = False
 
                 if job.get("status") in {
                     "queued",
@@ -856,9 +783,11 @@ def load_jobs() -> None:
                         "Server restarted while this job was active. "
                         "Use rerun to start it again from the beginning."
                     )
+                    changed = True
 
                 jobs[job_id] = job
-                save_job_unlocked(job_id)
+                if changed:
+                    save_job_unlocked(job_id)
 
             except Exception as exc:
                 print(f"Could not load {path}: {exc}", flush=True)
@@ -905,57 +834,71 @@ def active_running_job_unlocked() -> dict | None:
 
 
 def job_plot_footprint(job: dict) -> dict | None:
-    widths = []
-    heights = []
+    return job_model.plot_footprint(job)
+
+
+def _job_layer_for_index(job: dict, layer_index: int) -> dict | None:
+    return next((layer for layer in job.get("layers") or [] if int(layer.get("index") or 0) == layer_index), None)
+
+
+def _job_layer_input_path(job: dict, layer: dict) -> Path:
+    path = Path(layer.get("input_svg") or "")
+    if not path.exists() or not path.is_file():
+        raise HTTPException(status_code=404, detail="Layer SVG not found")
+    try:
+        path.resolve().relative_to(job_dir(job["id"]).resolve())
+    except (KeyError, ValueError) as exc:
+        raise HTTPException(status_code=400, detail="Layer SVG path is outside the job directory") from exc
+    return path
+
+
+def job_plot_preview(job: dict) -> dict | None:
+    footprint = job_plot_footprint(job)
+    if not footprint:
+        return None
+
+    layers = []
     for layer in job.get("layers") or []:
         metrics = layer.get("svg_metrics") or {}
         try:
+            index = int(layer.get("index") or 0)
             width = float(metrics.get("width_mm"))
             height = float(metrics.get("height_mm"))
-        except (TypeError, ValueError):
+            input_path = _job_layer_input_path(job, layer)
+        except (TypeError, ValueError, HTTPException):
             continue
-        if math.isfinite(width) and math.isfinite(height) and width > 0 and height > 0:
-            widths.append(width)
-            heights.append(height)
-    if not widths or not heights:
+        if index <= 0 or not math.isfinite(width) or not math.isfinite(height) or width <= 0 or height <= 0:
+            continue
+        try:
+            version = input_path.stat().st_mtime_ns
+        except OSError:
+            version = int(now() * 1000)
+        layers.append(
+            {
+                "index": index,
+                "name": layer.get("name") or f"Layer {index}",
+                "width_mm": round(width, 4),
+                "height_mm": round(height, 4),
+                "url": f"/jobs/{job['id']}/layers/{index}/preview.svg?v={version}",
+            }
+        )
+
+    if not layers:
         return None
     return {
-        "width_mm": round(max(widths), 4),
-        "height_mm": round(max(heights), 4),
+        "footprint": footprint,
+        "origin": job.get("plot_origin"),
+        "layers": sorted(layers, key=lambda item: item["index"]),
     }
 
 
 def job_plot_origin_for_paper(job: dict, paper: dict | None = None) -> dict | None:
     paper = paper or current_paper_settings()
-    if not paper.get("enabled", True):
-        return None
-    top_right = paper.get("top_right")
-    footprint = job_plot_footprint(job)
-    if not top_right or not footprint:
-        return None
-
-    plot_width = float(footprint["width_mm"])
-    plot_height = float(footprint["height_mm"])
-    paper_width = float(paper["width_mm"])
-    paper_height = float(paper["height_mm"])
-    if plot_width > paper_width or plot_height > paper_height:
-        raise ValueError(
-            f"Plot footprint {plot_width:.1f}×{plot_height:.1f} mm exceeds "
-            f"{paper.get('size', 'paper')} {paper.get('orientation', '')} "
-            f"{paper_width:.1f}×{paper_height:.1f} mm"
-        )
-
-    x_mm = float(top_right["x_mm"]) - plot_width
-    y_mm = float(top_right["y_mm"])
-    validate_bed_target(x_mm, y_mm)
-    validate_bed_target(float(top_right["x_mm"]), y_mm - plot_height)
-    return {
-        "x_mm": round(x_mm, 4),
-        "y_mm": round(y_mm, 4),
-        "anchor": "paper_top_right",
-        "paper_top_right": dict(top_right),
-        "plot_footprint": footprint,
-    }
+    return job_model.plot_origin_for_paper(
+        job,
+        paper,
+        validate_bed_target=validate_bed_target,
+    )
 
 
 def apply_paper_alignment_to_job(job: dict) -> None:
@@ -982,12 +925,7 @@ def job_plot_start_position(job: dict) -> dict:
 
 
 def layer_dip_estimates(layers: list[dict]) -> list[dict]:
-    return [
-        layer["ink_analysis"]["dip_schedule"]
-        for layer in layers
-        if isinstance(layer.get("ink_analysis"), dict)
-        and layer["ink_analysis"].get("dip_schedule")
-    ]
+    return job_model.layer_dip_estimates(layers)
 
 
 def plot_origin_for_layer_metrics(svg_metrics: dict, paper: dict | None = None) -> dict | None:
@@ -1659,7 +1597,10 @@ def execute_dip_cycle(job: dict, log, *, return_position: dict | None = None) ->
     if return_position is None:
         return_position = current_software_position()
 
-    speed_mm_s = min(SAFE_MANUAL_MAX_XY_SPEED_MM_S, 60.0)
+    speed_mm_s = min(
+        SAFE_MANUAL_MAX_XY_SPEED_MM_S,
+        float(well.get("travel_speed_mm_s", DEFAULT_INK_WELL_TRAVEL_SPEED_MM_S)),
+    )
     with hardware_lock:
         with serial.Serial(PLOTTER_PORT, timeout=2) as port:
             phase_start = timing_log.monotonic()
@@ -1730,8 +1671,13 @@ def attempt_dip_clearance_raise(job: dict, log) -> None:
 
 def return_from_failed_dip_without_loading_ink(job: dict, log, return_position: dict) -> dict:
     with hardware_lock:
+        well = job.get("ink_well") or {}
+        speed_mm_s = min(
+            SAFE_MANUAL_MAX_XY_SPEED_MM_S,
+            float(well.get("travel_speed_mm_s", DEFAULT_INK_WELL_TRAVEL_SPEED_MM_S)),
+        )
         _run_dip_servo_locked(job, raised=True, log=log)
-        actual = _move_to_bed_target_locked(return_position, speed_mm_s=60.0, log=log)
+        actual = _move_to_bed_target_locked(return_position, speed_mm_s=speed_mm_s, log=log)
     error_mm = math.hypot(
         actual["x_mm"] - return_position["x_mm"],
         actual["y_mm"] - return_position["y_mm"],
@@ -2489,11 +2435,12 @@ async def plot_layers(
     check_token(x_plotter_token)
     pen_defaults = current_pen_settings()
     plot_defaults = current_plot_settings()
+    well_settings = current_ink_well_settings()
     auto_dip_values = (auto_dip, auto_dip_enabled, ink_dip, ink_dipping, automatic_ink_dipping, autoDip)
     auto_dip = (
         resolve_auto_dip_flag(*auto_dip_values)
         if auto_dip_flag_was_provided(*auto_dip_values)
-        else bool(plot_defaults.get("auto_dip_enabled"))
+        else bool(plot_defaults.get("auto_dip_enabled")) and bool(well_settings.get("installed"))
     )
     if dip_interval_s is None and auto_dip:
         dip_interval_s = plot_defaults.get("dip_interval_s")
@@ -2525,7 +2472,6 @@ async def plot_layers(
         "pen_pos_down": pen_pos_down,
         "pen_pos_up": pen_pos_up,
     }
-    well_settings = current_ink_well_settings()
     well_snapshot = None
     upload_home = None
     if auto_dip:
@@ -2688,10 +2634,11 @@ def list_jobs(
         summaries = []
 
         for job_id, job in jobs.items():
+            status = job.get("status")
             summaries.append(
                 {
                     "id": job_id,
-                    "status": job.get("status"),
+                    "status": status,
                     "created_at": job.get("created_at"),
                     "started_at": job.get("started_at"),
                     "finished_at": job.get("finished_at"),
@@ -2712,6 +2659,7 @@ def list_jobs(
                     "dip_count": job.get("dip_count", 0),
                     "dip_failure": job.get("dip_failure"),
                     "plot_footprint": job_plot_footprint(job),
+                    "plot_preview": job_plot_preview(job) if status in PLOT_PREVIEW_STATUSES else None,
                     "plot_origin": job.get("plot_origin"),
                     "paper": job.get("paper"),
                     "rerun_of": job.get("rerun_of"),
@@ -2739,6 +2687,33 @@ def get_job(
         raise HTTPException(status_code=404, detail="Job not found")
 
     return job
+
+
+@app.get("/jobs/{job_id}/layers/{layer_index}/preview.svg")
+def job_layer_preview(
+    request: Request,
+    job_id: str,
+    layer_index: int,
+):
+    require_localhost(request)
+
+    with jobs_lock:
+        job = jobs.get(job_id)
+        if not job:
+            raise HTTPException(status_code=404, detail="Job not found")
+        layer = _job_layer_for_index(job, layer_index)
+        if not layer:
+            raise HTTPException(status_code=404, detail="Layer not found")
+        path = _job_layer_input_path(job, layer)
+
+    return FileResponse(
+        path,
+        media_type="image/svg+xml",
+        headers={
+            "Content-Security-Policy": "default-src 'none'; img-src data:; style-src 'unsafe-inline'",
+            "X-Content-Type-Options": "nosniff",
+        },
+    )
 
 
 @app.post("/jobs/{job_id}/cancel")
@@ -3043,28 +3018,34 @@ def clear_jobs(
     with jobs_lock:
         for job_id, job in list(jobs.items()):
             status = job.get("status")
-            if status in {"queued", "queued_for_operator", "waiting_for_operator", "queued_for_resume", "running", "dipping"}:
+            if status in JOB_DELETE_BLOCKED_STATUSES:
                 skipped.append({"id": job_id, "status": status})
                 continue
             if status not in clear_statuses:
                 skipped.append({"id": job_id, "status": status})
                 continue
 
-            removed.append({"id": job_id, "status": status})
-            del jobs[job_id]
-
             try:
-                if keep_files:
-                    state_store.delete_job_metadata(JOBS_DIR, job_id)
-                else:
-                    shutil.rmtree(job_dir(job_id), ignore_errors=True)
-                    log_path = Path(job.get("log_path", ""))
-                    if log_path.exists() and log_path.is_file():
-                        log_path.unlink()
+                removed.append(delete_job_record_unlocked(job_id, keep_files=keep_files))
             except Exception as exc:
                 skipped.append({"id": job_id, "status": status, "error": repr(exc)})
 
     return {"removed": removed, "skipped": skipped, "keep_files": keep_files}
+
+
+@app.post("/jobs/{job_id}/delete")
+def delete_job(
+    job_id: str,
+    payload: dict = Body(default={}),
+    x_plotter_token: Optional[str] = Header(default=None),
+):
+    check_token(x_plotter_token)
+    keep_files = bool(payload.get("keep_files", True))
+
+    with jobs_lock:
+        removed = delete_job_record_unlocked(job_id, keep_files=keep_files)
+
+    return {"removed": removed, "keep_files": keep_files}
 
 
 @app.post("/jobs/{job_id}/rerun")
@@ -3431,6 +3412,7 @@ def plotter_ink_well_update(
         "dip_pos",
         "dwell_ms",
         "drip_dwell_ms",
+        "travel_speed_mm_s",
         "dip_circle_count",
         "dip_circle_diameter_mm",
         "installed",
@@ -3562,18 +3544,23 @@ def plotter_ink_well_confirm_test(
 
     with ink_well_settings_lock:
         candidate = current_ink_well_settings()
-        try:
-            validate_ink_well_settings({**candidate, "test_passed": True}, require_ready=True)
-        except ValueError as exc:
-            raise HTTPException(status_code=400, detail=str(exc)) from exc
         if candidate.get("tested_at") is None:
             raise HTTPException(status_code=400, detail="Run the ink well test cycle before confirming it passed")
-        ink_well_settings["test_passed"] = True
+        candidate["test_passed"] = True
+        candidate["installed"] = True
+        try:
+            validate_ink_well_settings(candidate, require_ready=True)
+            require_ink_well_current_calibration(candidate)
+        except (ValueError, HTTPException) as exc:
+            detail = exc.detail if isinstance(exc, HTTPException) else str(exc)
+            raise HTTPException(status_code=400, detail=detail) from exc
+        ink_well_settings.clear()
+        ink_well_settings.update(candidate)
         save_ink_well_settings_unlocked()
         saved = current_ink_well_settings()
     return {
         "ok": True,
-        "message": "Ink well test confirmed. You can now mark the well installed.",
+        "message": "Ink well test confirmed and ink well check enabled.",
         "ink_well": saved,
     }
 
@@ -3588,19 +3575,33 @@ def plotter_motors(
     check_token(x_plotter_token)
 
     enabled = bool(payload.get("enabled"))
-    if enabled:
-        with hardware_lock:
+    with hardware_lock:
+        try:
             with serial.Serial(PLOTTER_PORT, timeout=1) as port:
-                motor_1, motor_2 = read_motor_resolution(port)
-        if (motor_1, motor_2) == (1, 1):
-            return {
-                "ok": True,
-                "message": "Motors already enabled; position calibration preserved.",
-                "position_invalidated": False,
-            }
+                if enabled:
+                    motor_1, motor_2 = read_motor_resolution(port)
+                    if (motor_1, motor_2) == (1, 1):
+                        return {
+                            "ok": True,
+                            "message": "Motors already enabled; position calibration preserved.",
+                            "position_invalidated": False,
+                        }
+                response = raw_command(port, "EM,1,1\r" if enabled else "EM,0,0\r")
+        except serial.SerialException as exc:
+            raise HTTPException(status_code=500, detail=str(exc)) from exc
 
-    result = run_manual_command("enable_xy" if enabled else "disable_xy")
+    if not response.startswith("OK"):
+        raise HTTPException(status_code=500, detail=f"Unexpected motor response: {response!r}")
+
+    result = {
+        "ok": True,
+        "method": "direct_ebb",
+        "response": response,
+    }
+
     invalidate_motor_resolution_cache()
+    with hardware_state_lock:
+        cached_hardware_state.pop("motor_enable_raw", None)
     if enabled:
         result["position_invalidated"] = False
         result["message"] = "Motors enabled; position calibration preserved."
@@ -3790,20 +3791,21 @@ def plotter_move(
 
     results = []
     with hardware_lock:
-        if absolute:
-            with serial.Serial(PLOTTER_PORT, timeout=1) as port:
+        with serial.Serial(PLOTTER_PORT, timeout=1) as port:
+            require_enabled_high_resolution_motors(port)
+            if absolute:
                 steps, _ = serial_query(port, "QS\r")
-            try:
-                axis_1_text, axis_2_text = steps.split(",", 1)
-                raw_current = steps_to_xy_mm(int(axis_1_text), int(axis_2_text))
-                current = current_position_estimate(raw_current)
-                if current is None:
-                    raise ValueError("No current position available")
-            except ValueError as exc:
-                raise HTTPException(status_code=500, detail=f"Could not parse current position: {steps!r}") from exc
+                try:
+                    axis_1_text, axis_2_text = steps.split(",", 1)
+                    raw_current = steps_to_xy_mm(int(axis_1_text), int(axis_2_text))
+                    current = current_position_estimate(raw_current)
+                    if current is None:
+                        raise ValueError("No current position available")
+                except ValueError as exc:
+                    raise HTTPException(status_code=500, detail=f"Could not parse current position: {steps!r}") from exc
 
-            x_delta = (float(x_value) - current["x_mm"]) if x_value is not None else 0.0
-            y_delta = (float(y_value) - current["y_mm"]) if y_value is not None else 0.0
+                x_delta = (float(x_value) - current["x_mm"]) if x_value is not None else 0.0
+                y_delta = (float(y_value) - current["y_mm"]) if y_value is not None else 0.0
 
         raw_delta = bed_delta_to_raw_delta(x_delta, y_delta)
 
@@ -4020,13 +4022,32 @@ def operator_next(request: Request):
 
 
 @app.post("/operator/continue")
-def operator_continue(request: Request):
+def operator_continue(request: Request, payload: dict = Body(default={})):
     require_localhost(request)
 
     with operator_lock:
         if not operator_prompt["active"]:
             return {"ok": True, "message": "No operator prompt is active."}
+        prompt = dict(operator_prompt)
+
+    if prompt.get("action") == "start":
+        plot_defaults = current_plot_settings()
+        if "auto_dip_enabled" in payload or "enabled" in payload:
+            auto_dip_enabled = resolve_auto_dip_flag(payload.get("auto_dip_enabled", payload.get("enabled")))
+        else:
+            well_settings = current_ink_well_settings()
+            auto_dip_enabled = bool(plot_defaults.get("auto_dip_enabled")) and bool(well_settings.get("installed"))
+        dip_interval_s = payload.get("dip_interval_s")
+        if auto_dip_enabled and dip_interval_s is None:
+            dip_interval_s = plot_defaults.get("dip_interval_s")
+
+        with jobs_lock:
+            job = jobs.get(prompt.get("job_id"))
+            if job is None:
+                raise HTTPException(status_code=404, detail="Job not found")
+            configure_job_auto_dip(job, enabled=auto_dip_enabled, dip_interval_s=dip_interval_s)
+            save_job_unlocked(job["id"])
 
     operator_event.set()
 
-    return {"ok": True, "message": "Continuing."}
+    return {"ok": True, "message": "Continuing.", "operator_prompt": prompt}

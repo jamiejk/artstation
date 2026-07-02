@@ -238,7 +238,8 @@ def move_to_bed_target_on_port(
     delta_y = target_y - current_position["y_mm"]
     distance = math.hypot(delta_x, delta_y)
     if distance < 0.001:
-        return current_position
+        _axis_1_after, _axis_2_after, raw_after = read_step_position(port)
+        return update_position(raw_after)
 
     raw_delta = bed_delta_to_raw_delta(delta_x, delta_y)
     axis_1_delta, axis_2_delta = xy_mm_to_steps(raw_delta["x_mm"], raw_delta["y_mm"])

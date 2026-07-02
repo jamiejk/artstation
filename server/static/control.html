@@ -37,10 +37,73 @@
       background: #ffffff;
     }
 
+    .top-left {
+      display: flex;
+      align-items: center;
+      gap: 18px;
+      min-width: 0;
+    }
+
     h1 {
       margin: 0;
       font-size: 18px;
       font-weight: 650;
+    }
+
+    .top-menu {
+      position: relative;
+    }
+
+    .top-menu-button {
+      min-height: 32px;
+      padding: 5px 9px;
+      border-color: transparent;
+      background: transparent;
+    }
+
+    .top-menu-button::after {
+      content: "▾";
+      margin-left: 6px;
+      color: var(--muted);
+      font-size: 11px;
+    }
+
+    .top-menu-panel {
+      position: absolute;
+      top: calc(100% + 8px);
+      left: 0;
+      z-index: 40;
+      width: min(560px, calc(100vw - 28px));
+      max-height: min(620px, calc(100vh - 72px));
+      overflow: auto;
+      display: none;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: #ffffff;
+      box-shadow: 0 16px 38px rgba(16, 24, 40, 0.18);
+    }
+
+    .top-menu.open .top-menu-panel {
+      display: block;
+    }
+
+    .menu-panel-head {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 10px;
+      padding: 10px 12px;
+      border-bottom: 1px solid var(--line);
+      font-weight: 650;
+    }
+
+    .menu-panel-body {
+      padding: 10px;
+    }
+
+    .recent-list {
+      display: grid;
+      gap: 8px;
     }
 
     main {
@@ -48,7 +111,7 @@
       grid-template-columns: minmax(300px, 420px) minmax(360px, 1fr);
       gap: 14px;
       padding: 14px;
-      max-width: 1280px;
+      max-width: 1540px;
       margin: 0 auto;
     }
 
@@ -68,6 +131,49 @@
       padding: 10px 12px;
       border-bottom: 1px solid var(--line);
       font-weight: 650;
+      cursor: pointer;
+      user-select: none;
+    }
+
+    .section-title {
+      display: inline-flex;
+      align-items: center;
+      gap: 7px;
+      min-width: 0;
+      flex: 1 1 auto;
+    }
+
+    .collapse-toggle {
+      flex: 0 0 auto;
+      width: 22px;
+      height: 22px;
+      min-height: 22px;
+      padding: 0;
+      border: 0;
+      border-radius: 50%;
+      background: transparent;
+      color: var(--muted);
+      font-size: 15px;
+      line-height: 1;
+      transform: rotate(90deg);
+      transition: transform 120ms ease, background 120ms ease;
+    }
+
+    .collapse-toggle:hover {
+      background: #eef4ff;
+      border-color: transparent;
+    }
+
+    section.collapsed .collapse-toggle {
+      transform: rotate(0deg);
+    }
+
+    section.collapsed .section-body {
+      display: none;
+    }
+
+    section.collapsed .section-head {
+      border-bottom: 0;
     }
 
     .section-body { padding: 12px; }
@@ -118,10 +224,40 @@
       transform: translateX(20px);
     }
 
+    .module-switch input:disabled + .switch-track {
+      opacity: 0.7;
+      cursor: wait;
+    }
+
     .stack {
       display: grid;
       gap: 14px;
       align-content: start;
+    }
+
+    .bed-layout {
+      display: grid;
+      grid-template-columns: minmax(300px, 1fr) minmax(220px, 320px);
+      gap: 14px;
+      align-items: start;
+    }
+
+    .bed-side {
+      display: grid;
+      gap: 14px;
+      align-content: start;
+    }
+
+    .bed-side dl {
+      grid-template-columns: 92px minmax(0, 1fr);
+      gap: 5px 9px;
+      font-size: 12px;
+    }
+
+    .bed-side .info-row {
+      grid-template-columns: 92px minmax(0, 1fr);
+      gap: 8px;
+      font-size: 12px;
     }
 
     .status-dot {
@@ -178,17 +314,32 @@
       cursor: wait;
     }
 
+    .sr-only {
+      position: absolute;
+      width: 1px;
+      height: 1px;
+      padding: 0;
+      margin: -1px;
+      overflow: hidden;
+      clip: rect(0, 0, 0, 0);
+      white-space: nowrap;
+      border: 0;
+    }
+
     .jog {
       display: grid;
-      grid-template-columns: repeat(3, minmax(70px, 1fr));
-      grid-template-rows: repeat(3, 54px);
-      gap: 8px;
+      grid-template-columns: repeat(3, 36px);
+      grid-template-rows: repeat(3, 36px);
+      justify-content: center;
+      gap: 5px;
     }
 
     .jog button {
-      font-size: 22px;
-      line-height: 1;
+      width: 36px;
+      min-height: 36px;
       padding: 0;
+      font-size: 17px;
+      line-height: 1;
     }
 
     .jog .up { grid-column: 2; grid-row: 1; }
@@ -257,6 +408,19 @@
       overflow-wrap: anywhere;
     }
 
+    .control-row {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      margin-bottom: 10px;
+    }
+
+    .control-row-label {
+      color: var(--muted);
+      font-weight: 650;
+    }
+
     .spec-note {
       margin-top: 8px;
       min-height: 18px;
@@ -271,8 +435,10 @@
 
     .plot-area {
       position: relative;
+      width: 75%;
+      margin: 0 auto;
       aspect-ratio: 2 / 3;
-      min-height: 300px;
+      min-height: 240px;
       background:
         linear-gradient(to right, rgba(24, 32, 42, 0.08) 1px, transparent 1px),
         linear-gradient(to bottom, rgba(24, 32, 42, 0.08) 1px, transparent 1px),
@@ -282,6 +448,49 @@
       border-radius: 7px;
       overflow: hidden;
       touch-action: none;
+    }
+
+    .bed-jog {
+      position: absolute;
+      top: 10px;
+      left: 10px;
+      z-index: 24;
+      display: grid;
+      gap: 8px;
+      width: 136px;
+      padding: 9px;
+      border: 1px solid rgba(174, 184, 196, 0.9);
+      border-radius: 7px;
+      background: rgba(255, 255, 255, 0.92);
+      box-shadow: 0 8px 22px rgba(16, 24, 40, 0.16);
+      touch-action: manipulation;
+    }
+
+    .bed-jog .jog {
+      justify-content: start;
+    }
+
+    .jog-step {
+      display: grid;
+      grid-template-columns: 1fr;
+      gap: 5px;
+    }
+
+    .jog-step output {
+      justify-self: center;
+      min-width: 58px;
+      padding: 2px 6px;
+      border: 1px solid var(--line);
+      border-radius: 999px;
+      background: #fbfcfe;
+      color: var(--muted);
+      font-size: 12px;
+      font-weight: 650;
+      text-align: center;
+    }
+
+    .jog-step input[type="range"] {
+      width: 100%;
     }
 
     .axis-x, .axis-y {
@@ -308,7 +517,7 @@
       border-radius: 50%;
       background: rgba(180, 35, 24, 0.08);
       pointer-events: none;
-      z-index: 1;
+      z-index: 3;
     }
 
     .home-marker {
@@ -320,6 +529,7 @@
       color: var(--muted);
       background: white;
       font-size: 12px;
+      z-index: 4;
     }
 
     .calibration-marker {
@@ -337,7 +547,7 @@
       font-size: 13px;
       font-weight: 800;
       border-radius: 50%;
-      z-index: 2;
+      z-index: 4;
       pointer-events: none;
     }
 
@@ -391,6 +601,7 @@
       box-shadow: 0 0 0 4px rgba(23, 92, 211, 0.16);
       cursor: grab;
       touch-action: none;
+      z-index: 5;
     }
 
     .head-marker.dragging {
@@ -420,6 +631,7 @@
       box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.7);
       display: none;
       pointer-events: none;
+      z-index: 1;
     }
 
     .sheet-marker.warn {
@@ -442,6 +654,43 @@
     }
 
     .sheet-marker.warn::after { color: var(--danger); }
+
+    .plot-preview {
+      position: absolute;
+      display: none;
+      overflow: hidden;
+      pointer-events: none;
+      z-index: 2;
+      border: 1px solid rgba(23, 92, 211, 0.45);
+      background: rgba(255, 255, 255, 0.16);
+    }
+
+    .plot-preview img {
+      position: absolute;
+      left: 0;
+      top: 0;
+      display: block;
+      opacity: 0.72;
+      mix-blend-mode: multiply;
+      object-fit: fill;
+    }
+
+    .plot-preview::after {
+      content: attr(data-label);
+      position: absolute;
+      left: 4px;
+      bottom: 4px;
+      max-width: calc(100% - 8px);
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+      color: var(--blue);
+      background: rgba(255, 255, 255, 0.88);
+      border-radius: 4px;
+      padding: 1px 4px;
+      font-size: 11px;
+      font-weight: 750;
+    }
 
     .target-marker {
       position: absolute;
@@ -473,6 +722,7 @@
     .jobs th { color: var(--muted); font-weight: 650; }
     .jobs .id { width: 120px; }
     .jobs .status { width: 95px; }
+    .jobs .actions { width: 42px; text-align: right; }
 
     .message {
       min-height: 28px;
@@ -480,6 +730,52 @@
       color: var(--muted);
       overflow-wrap: anywhere;
     }
+
+    .status-modal {
+      position: fixed;
+      left: 50%;
+      top: 18px;
+      z-index: 50;
+      width: min(420px, calc(100vw - 28px));
+      transform: translate(-50%, -12px);
+      border: 1px solid var(--line);
+      border-left: 4px solid var(--accent);
+      border-radius: 8px;
+      background: #ffffff;
+      box-shadow: 0 16px 38px rgba(16, 24, 40, 0.2);
+      padding: 11px 42px 11px 12px;
+      color: var(--ink);
+      font-weight: 650;
+      opacity: 0;
+      pointer-events: none;
+      transition: opacity 140ms ease, transform 140ms ease;
+    }
+
+    .status-modal.show {
+      opacity: 1;
+      transform: translate(-50%, 0);
+      pointer-events: auto;
+    }
+
+    .status-modal.error { border-left-color: var(--danger); }
+    .status-modal.busy { border-left-color: var(--blue); }
+
+    .status-modal-close {
+      position: absolute;
+      top: 6px;
+      right: 7px;
+      width: 28px;
+      height: 28px;
+      min-height: 28px;
+      padding: 0;
+      border: 0;
+      background: transparent;
+      color: var(--muted);
+      font-size: 18px;
+      line-height: 1;
+    }
+
+    .status-modal-close:hover { background: #f2f4f7; border-color: transparent; }
 
     .kbd {
       display: inline-block;
@@ -551,6 +847,29 @@
     .job-card .job-id {
       font-weight: 800;
       overflow-wrap: anywhere;
+    }
+
+    .job-delete {
+      width: 28px;
+      height: 28px;
+      min-height: 28px;
+      padding: 0;
+      border-color: transparent;
+      color: var(--muted);
+      background: transparent;
+      font-size: 18px;
+      line-height: 1;
+    }
+
+    .job-delete:hover {
+      color: var(--danger);
+      background: #fee4e2;
+      border-color: #f97066;
+    }
+
+    .job-delete:disabled {
+      opacity: 0.38;
+      cursor: not-allowed;
     }
 
     .job-card .job-layer,
@@ -632,48 +951,68 @@
 
     @media (max-width: 820px) {
       main { grid-template-columns: 1fr; }
+      .bed-layout { grid-template-columns: 1fr; }
+      .plot-area { width: 100%; min-height: 300px; }
+      .bed-jog {
+        top: 8px;
+        left: 8px;
+        width: 124px;
+        padding: 7px;
+        gap: 6px;
+      }
+      .bed-jog .jog {
+        grid-template-columns: repeat(3, 32px);
+        grid-template-rows: repeat(3, 32px);
+      }
+      .bed-jog .jog button {
+        width: 32px;
+        min-height: 32px;
+      }
       header { height: auto; min-height: 52px; align-items: flex-start; flex-direction: column; padding: 10px 14px; }
+      .top-left { width: 100%; justify-content: space-between; }
+      .top-menu-panel { left: auto; right: 0; }
     }
   </style>
 </head>
 <body>
   <header>
-    <h1>Plotter Control</h1>
+    <div class="top-left">
+      <h1>Plotter Control</h1>
+      <div class="top-menu" id="filesMenu">
+        <button class="top-menu-button" id="filesMenuButton" type="button" aria-haspopup="true" aria-expanded="false">Files</button>
+        <div class="top-menu-panel" id="filesMenuPanel">
+          <div class="menu-panel-head">
+            <span>Recent</span>
+            <button id="clearJobs" type="button">Clear Stopped</button>
+          </div>
+          <div class="menu-panel-body">
+            <div class="recent-list" id="recentJobs"></div>
+          </div>
+        </div>
+      </div>
+    </div>
     <div id="connection"><span class="status-dot"></span>Connecting</div>
   </header>
 
   <main>
     <div class="stack">
       <section>
-        <div class="section-head">Motion</div>
-        <div class="section-body">
-          <div class="jog" id="jog">
-            <button class="up" data-x="0" data-y="1" title="Jog up">&uarr;</button>
-            <button class="left" data-x="-1" data-y="0" title="Jog left">&larr;</button>
-            <button class="stop" id="stop" title="Stop jogging">STOP</button>
-            <button class="right" data-x="1" data-y="0" title="Jog right">&rarr;</button>
-            <button class="down" data-x="0" data-y="-1" title="Jog down">&darr;</button>
-          </div>
-
-          <div class="form-row">
-            <label for="step">Jog distance per pulse</label>
-            <output id="stepValue">2.0 mm</output>
-            <input id="step" type="range" min="0.2" max="10" step="0.2" value="2.0">
-          </div>
-
-        </div>
-      </section>
-
-      <section>
         <div class="section-head">Controls</div>
         <div class="section-body">
+          <div class="control-row">
+            <span class="control-row-label">Motors</span>
+            <label class="module-switch" title="Enable or disable the XY motors">
+            <span>OFF</span>
+            <input id="motorsEnabled" type="checkbox">
+            <span class="switch-track"></span>
+            <span>ON</span>
+            </label>
+          </div>
           <div class="toolbar">
             <button id="penUp">Pen Up</button>
             <button id="penDown">Pen Down</button>
             <button id="setHome">Set Home</button>
             <button id="returnHome">Home</button>
-            <button id="enableMotors">Motors On</button>
-            <button id="disableMotors">Motors Off</button>
             <button id="operatorContinue" class="primary">Continue</button>
             <button id="pauseActive" class="danger">Pause Job</button>
           </div>
@@ -805,6 +1144,10 @@
               <label for="wellDripDwell">Drip dwell (ms)</label>
               <span></span><input id="wellDripDwell" type="number" min="0" max="30000" step="100" value="0"><span></span>
             </div>
+            <div class="pen-control">
+              <label for="wellTravelSpeed">Travel speed (mm/s)</label>
+              <span></span><input id="wellTravelSpeed" type="number" min="1" max="200" step="1" value="120"><span></span>
+            </div>
           </div>
           <div class="toolbar" style="margin-top: 10px">
             <button id="wellSetCentre">Set Centre Here</button>
@@ -824,24 +1167,10 @@
                 <input id="dipInterval" type="number" min="0.1" max="86400" step="0.1" value="60">
                 s
               </label>
-            </div>
-            <div class="toolbar">
-              <button id="wellSaveAutoDipDefault">Save Default</button>
-              <button id="wellApplyQueuedAutoDip">Apply to Queued Job</button>
+              <button id="wellSaveAutoDip">Save</button>
+              <button id="wellDipNow">Dip Now</button>
             </div>
             <div class="spec-note" id="autoDipStatus">Auto Dip is off.</div>
-          </div>
-          <div class="job-controls" id="wellPausedDipControls">
-            <div class="toolbar">
-              <button id="wellDipNow">Dip Now</button>
-              <label class="mono" style="display:flex;align-items:center;gap:6px">
-                Dip interval
-                <input id="wellPausedDipInterval" type="number" min="0.1" max="86400" step="0.1" value="60">
-                s
-              </label>
-              <button id="wellPausedDipIntervalSave">Set Interval</button>
-            </div>
-            <div class="spec-note" id="wellPausedDipStatus">Dip interval is saved as the default for future auto-dip jobs. Pause an auto-dip job to use Dip Now.</div>
           </div>
           <div class="spec-note" id="wellStatus">Not configured.</div>
         </div>
@@ -890,88 +1219,101 @@
         </div>
       </section>
 
-      <section>
-        <div class="section-head">State</div>
-        <div class="section-body">
-          <dl id="stateList"></dl>
-        </div>
-      </section>
-
-      <section>
-        <div class="section-head">Access</div>
-        <div class="section-body">
-          <div class="info-grid" id="serverInfo"></div>
-        </div>
-      </section>
     </div>
 
     <div class="stack">
-      <section>
-        <div class="section-head">
-          <span>Bed Position 609.6 x 914.4 mm</span>
-          <span><span class="kbd">Arrow keys</span> hold to jog</span>
-        </div>
-        <div class="section-body">
-          <div class="plot-area" id="plotArea">
-            <div class="axis-x"></div>
-            <div class="axis-y"></div>
-            <div class="pcb-marker"></div>
-            <div class="calibration-marker" title="Calibration point: top-left, nearest PCB">C</div>
-            <div class="sheet-marker" id="sheetMarker"></div>
-            <div class="home-marker" id="homeMarker" title="User-defined home">+</div>
-            <div class="bed-label bottom" style="left: 0%">0</div>
-            <div class="bed-label bottom" style="left: 25%">152</div>
-            <div class="bed-label bottom" style="left: 50%">305</div>
-            <div class="bed-label bottom" style="left: 75%">457</div>
-            <div class="bed-label bottom" style="left: 100%">610 mm</div>
-            <div class="bed-label left" style="bottom: 0%">0</div>
-            <div class="bed-label left" style="bottom: 25%">229</div>
-            <div class="bed-label left" style="bottom: 50%">457</div>
-            <div class="bed-label left" style="bottom: 75%">686</div>
-            <div class="bed-label left" style="bottom: 100%">914 mm</div>
-            <div class="target-marker" id="targetMarker"></div>
-            <div class="well-marker" id="wellMarker" title="Ink well keep-out zone"></div>
-            <div class="head-marker" id="headMarker">@</div>
+      <div class="bed-layout">
+        <section>
+          <div class="section-head">
+            <span>Bed Position 609.6 x 914.4 mm</span>
+            <span><span class="kbd">Arrow keys</span> hold to jog</span>
           </div>
-        </div>
-      </section>
+          <div class="section-body">
+            <div class="plot-area" id="plotArea">
+              <div class="bed-jog" aria-label="Jog controls">
+                <div class="jog" id="jog">
+                  <button class="up" data-x="0" data-y="1" title="Jog up" aria-label="Jog up">&uarr;</button>
+                  <button class="left" data-x="-1" data-y="0" title="Jog left" aria-label="Jog left">&larr;</button>
+                  <button class="stop" id="stop" title="Stop jogging" aria-label="Stop jogging">&#9632;</button>
+                  <button class="right" data-x="1" data-y="0" title="Jog right" aria-label="Jog right">&rarr;</button>
+                  <button class="down" data-x="0" data-y="-1" title="Jog down" aria-label="Jog down">&darr;</button>
+                </div>
+                <div class="jog-step">
+                  <label class="sr-only" for="step">Jog distance per pulse</label>
+                  <output id="stepValue">2.0 mm</output>
+                  <input id="step" type="range" min="0.2" max="10" step="0.2" value="2.0" title="Jog distance per pulse">
+                </div>
+              </div>
+              <div class="axis-x"></div>
+              <div class="axis-y"></div>
+              <div class="pcb-marker"></div>
+              <div class="calibration-marker" title="Calibration point: top-left, nearest PCB">C</div>
+              <div class="sheet-marker" id="sheetMarker"></div>
+              <div class="plot-preview" id="plotPreview"></div>
+              <div class="home-marker" id="homeMarker" title="User-defined home">+</div>
+              <div class="bed-label bottom" style="left: 0%">0</div>
+              <div class="bed-label bottom" style="left: 25%">152</div>
+              <div class="bed-label bottom" style="left: 50%">305</div>
+              <div class="bed-label bottom" style="left: 75%">457</div>
+              <div class="bed-label bottom" style="left: 100%">610 mm</div>
+              <div class="bed-label left" style="bottom: 0%">0</div>
+              <div class="bed-label left" style="bottom: 25%">229</div>
+              <div class="bed-label left" style="bottom: 50%">457</div>
+              <div class="bed-label left" style="bottom: 75%">686</div>
+              <div class="bed-label left" style="bottom: 100%">914 mm</div>
+              <div class="target-marker" id="targetMarker"></div>
+              <div class="well-marker" id="wellMarker" title="Ink well keep-out zone"></div>
+              <div class="head-marker" id="headMarker">@</div>
+            </div>
+          </div>
+        </section>
 
-      <section>
-        <div class="section-head">
-          <span>Jobs</span>
-          <button id="clearJobs">Clear Stopped</button>
+        <div class="bed-side">
+          <section>
+            <div class="section-head">Jobs</div>
+            <div class="section-body">
+              <form id="uploadForm" style="margin-bottom:14px">
+                <div class="form-row">
+                  <label for="plotFiles">SVG layers (ordered)</label>
+                  <input id="plotFiles" type="file" accept=".svg,image/svg+xml" multiple required>
+                </div>
+                <div class="form-row">
+                  <label for="layerNames">Layer names, comma-separated</label>
+                  <input id="layerNames" type="text" placeholder="Blue, Black">
+                </div>
+                <div class="spec-note">Automatic ink dipping uses the default in the Ink Well panel. Save or change it there before upload; externally submitted jobs inherit the same default unless their request explicitly sets auto_dip.</div>
+                <div class="toolbar" style="margin-top:10px">
+                  <button id="uploadSubmit" class="primary" type="submit">Prepare &amp; Queue</button>
+                </div>
+              </form>
+              <div class="job-groups">
+                <div class="job-group">
+                  <div class="job-group-title">Active</div>
+                  <div class="job-list" id="activeJobs"></div>
+                </div>
+                <div class="job-group">
+                  <div class="job-group-title">Queued</div>
+                  <div class="job-list" id="queuedJobs"></div>
+                </div>
+              </div>
+            </div>
+          </section>
+
+          <section>
+            <div class="section-head">State</div>
+            <div class="section-body">
+              <dl id="stateList"></dl>
+            </div>
+          </section>
+
+          <section>
+            <div class="section-head">Access</div>
+            <div class="section-body">
+              <div class="info-grid" id="serverInfo"></div>
+            </div>
+          </section>
         </div>
-        <div class="section-body">
-          <form id="uploadForm" style="margin-bottom:14px">
-            <div class="form-row">
-              <label for="plotFiles">SVG layers (ordered)</label>
-              <input id="plotFiles" type="file" accept=".svg,image/svg+xml" multiple required>
-            </div>
-            <div class="form-row">
-              <label for="layerNames">Layer names, comma-separated</label>
-              <input id="layerNames" type="text" placeholder="Blue, Black">
-            </div>
-            <div class="spec-note">Automatic ink dipping uses the default in the Ink Well panel. Save or change it there before upload; externally submitted jobs inherit the same default unless their request explicitly sets auto_dip.</div>
-            <div class="toolbar" style="margin-top:10px">
-              <button id="uploadSubmit" class="primary" type="submit">Prepare &amp; Queue</button>
-            </div>
-          </form>
-          <div class="job-groups">
-            <div class="job-group">
-              <div class="job-group-title">Active</div>
-              <div class="job-list" id="activeJobs"></div>
-            </div>
-            <div class="job-group">
-              <div class="job-group-title">Queued</div>
-              <div class="job-list" id="queuedJobs"></div>
-            </div>
-          </div>
-          <table class="jobs">
-            <thead><tr><th class="id">Job</th><th class="status">Status</th><th>Layer</th></tr></thead>
-            <tbody id="jobsBody"></tbody>
-          </table>
-        </div>
-      </section>
+      </div>
 
       <section>
         <div class="section-head">Messages</div>
@@ -979,6 +1321,11 @@
       </section>
     </div>
   </main>
+
+  <div class="status-modal" id="statusModal" role="status" aria-live="polite" aria-atomic="true">
+    <div id="statusModalText"></div>
+    <button class="status-modal-close" id="statusModalClose" type="button" title="Dismiss">&times;</button>
+  </div>
 
   <script>
     try {
@@ -1026,8 +1373,11 @@
       currentPosition: { x: 0, y: 0 },
       positionKnown: false,
       positionCalibrationId: null,
+      motorsEnabled: null,
       inkWell: null,
       paper: null,
+      motorSwitchPending: false,
+      statusModalTimer: null,
     };
 
     const $ = (id) => document.getElementById(id);
@@ -1040,8 +1390,108 @@
     const QUEUED_STATUSES = new Set(["queued", "queued_for_operator", "waiting_for_operator"]);
     const HISTORY_STATUSES = new Set(["done", "cancelled", "interrupted", "failed"]);
 
-    function setMessage(text) {
+    function hideStatusModal() {
+      if (state.statusModalTimer) {
+        clearTimeout(state.statusModalTimer);
+        state.statusModalTimer = null;
+      }
+      const modal = $("statusModal");
+      if (modal) modal.classList.remove("show", "busy", "error");
+    }
+
+    function showStatusModal(text, options = {}) {
+      const modal = $("statusModal");
+      const textElement = $("statusModalText");
+      if (!modal || !textElement) return;
+      if (state.statusModalTimer) clearTimeout(state.statusModalTimer);
+      textElement.textContent = text;
+      modal.classList.toggle("busy", options.kind === "busy");
+      modal.classList.toggle("error", options.kind === "error");
+      modal.classList.add("show");
+      if (!options.sticky) {
+        state.statusModalTimer = setTimeout(hideStatusModal, options.durationMs || 2600);
+      }
+    }
+
+    function setMessage(text, options = {}) {
       $("message").textContent = text;
+      if (options.modal) showStatusModal(text, options);
+    }
+
+    function showError(error) {
+      const message = error && error.message ? error.message : String(error || "Request failed");
+      setMessage(message, { modal: true, kind: "error", sticky: true });
+    }
+
+    function sectionTitle(section) {
+      if (section.dataset.sectionTitle) return section.dataset.sectionTitle;
+      const head = section.querySelector(":scope > .section-head");
+      if (!head) return "panel";
+      const firstText = Array.from(head.childNodes).find((node) => (
+        node.nodeType === Node.TEXT_NODE && node.textContent.trim()
+      ));
+      const firstElement = Array.from(head.children).find((node) => !node.classList.contains("collapse-toggle"));
+      const text = firstText ? firstText.textContent : (firstElement ? firstElement.textContent : head.textContent);
+      return String(text || "panel").replace(/\s+/g, " ").trim();
+    }
+
+    function sectionCollapseKey(section) {
+      if (section.dataset.collapseKey) return section.dataset.collapseKey;
+      return `panelCollapsed:${sectionTitle(section)}`;
+    }
+
+    function setSectionCollapsed(section, collapsed) {
+      const key = sectionCollapseKey(section);
+      const toggle = section.querySelector(":scope > .section-head .collapse-toggle");
+      section.classList.toggle("collapsed", collapsed);
+      if (toggle) {
+        toggle.setAttribute("aria-expanded", collapsed ? "false" : "true");
+        toggle.title = collapsed ? `Expand ${sectionTitle(section)}` : `Collapse ${sectionTitle(section)}`;
+      }
+      storageSet(key, collapsed ? "true" : "false");
+    }
+
+    function setupCollapsibleSections() {
+      document.querySelectorAll("section").forEach((section) => {
+        const head = section.querySelector(":scope > .section-head");
+        const body = section.querySelector(":scope > .section-body");
+        if (!head || !body || head.querySelector(".collapse-toggle")) return;
+
+        const titleText = sectionTitle(section);
+        section.dataset.sectionTitle = titleText;
+        section.dataset.collapseKey = `panelCollapsed:${titleText}`;
+        const titleWrap = document.createElement("span");
+        titleWrap.className = "section-title";
+
+        Array.from(head.childNodes).forEach((node) => {
+          if (node.nodeType === Node.TEXT_NODE && node.textContent.trim()) node.remove();
+        });
+        const firstTitleElement = Array.from(head.children).find((node) => (
+          !node.matches("button, label, input, select, textarea, a")
+        ));
+        if (firstTitleElement) firstTitleElement.remove();
+
+        const toggle = document.createElement("button");
+        toggle.type = "button";
+        toggle.className = "collapse-toggle";
+        toggle.textContent = "\u203a";
+        toggle.setAttribute("aria-label", `Toggle ${titleText}`);
+        titleWrap.append(toggle, document.createTextNode(titleText));
+        head.prepend(titleWrap);
+
+        const stored = storageGet(sectionCollapseKey(section), "false") === "true";
+        setSectionCollapsed(section, stored);
+
+        head.addEventListener("click", (event) => {
+          if (
+            !event.target.closest(".collapse-toggle")
+            && event.target.closest("button, input, label, select, textarea, a")
+          ) {
+            return;
+          }
+          setSectionCollapsed(section, !section.classList.contains("collapsed"));
+        });
+      });
     }
 
     function setStartupMessage(text) {
@@ -1075,13 +1525,14 @@
       button.disabled = true;
       button.classList.add("busy");
       button.textContent = busyText;
-      setMessage(busyText);
+      setMessage(busyText, { modal: true, kind: "busy", sticky: true });
       try {
         return await action();
       } finally {
         button.textContent = originalText;
         button.classList.remove("busy");
         button.disabled = false;
+        hideStatusModal();
       }
     }
 
@@ -1103,6 +1554,25 @@
       return Boolean(hardware && hardware.connected === true && (hardware.position_estimate || hardware.steps || hardware.firmware));
     }
 
+    function motorPinEnabled(value) {
+      if (value == null) return null;
+      const pin = String(value).split(",").pop().trim();
+      if (pin === "0") return true;
+      if (pin === "1") return false;
+      return null;
+    }
+
+    function motorEnabledFromHardware(hardware) {
+      const raw = hardware && hardware.motor_enable_raw;
+      if (!raw) return null;
+      const axis1 = motorPinEnabled(raw.axis_1);
+      const axis2 = motorPinEnabled(raw.axis_2);
+      if (axis1 === null && axis2 === null) return null;
+      if (axis1 === false || axis2 === false) return false;
+      if (axis1 === true && axis2 === true) return true;
+      return null;
+    }
+
     function penPayload(position) {
       return {
         position,
@@ -1118,6 +1588,14 @@
       };
     }
 
+    function autoDipIntervalValue() {
+      return clamp(Number(($("dipInterval") && $("dipInterval").value) || 60), 0.1, 86400);
+    }
+
+    function pausedAutoDipJob() {
+      return state.pausedJob && state.pausedJob.auto_dip_enabled ? state.pausedJob : null;
+    }
+
     function plotSettingsPayload() {
       return {
         speed_pendown: clamp(inputNumber("plotDownSpeed", 15), 1, 100),
@@ -1126,7 +1604,7 @@
         pen_delay_up: clamp(inputNumber("penDelayUp", 0), -500, 500),
         pen_rate_raise: clamp(inputNumber("penRateRaise", 75), 1, 100),
         auto_dip_enabled: Boolean($("autoDip") && $("autoDip").checked),
-        dip_interval_s: clamp(inputNumber("dipInterval", 60), 0.1, 86400),
+        dip_interval_s: autoDipIntervalValue(),
       };
     }
 
@@ -1139,6 +1617,7 @@
         dip_circle_count: clamp(inputNumber("wellDipCircleCount", 3), 0, 10),
         dip_circle_diameter_mm: clamp(inputNumber("wellDipCircleDiameter", 10), 0, 50),
         drip_dwell_ms: clamp(inputNumber("wellDripDwell", 0), 0, 30000),
+        travel_speed_mm_s: clamp(inputNumber("wellTravelSpeed", 120), 1, Number(motionSpec().safe_manual_max_xy_speed_mm_s || 200)),
       };
     }
 
@@ -1195,19 +1674,32 @@
       return Boolean(well && well.installed && well.test_passed && well.centre && !inkWellStale(well));
     }
 
+    function autoDipRequestedForJob() {
+      return Boolean($("autoDip") && $("autoDip").checked && $("wellEnabled") && $("wellEnabled").checked);
+    }
+
     function renderAutoDipStatus() {
       if (!$("autoDipStatus")) return;
-      const interval = clamp(Number(($("dipInterval") && $("dipInterval").value) || 60), 0.1, 86400);
+      const interval = autoDipIntervalValue();
       const enabled = Boolean($("autoDip") && $("autoDip").checked);
+      const wellOn = Boolean($("wellEnabled") && $("wellEnabled").checked);
+      const job = pausedAutoDipJob();
       const ready = inkWellReadyForAutoDip();
-      let text = enabled
-        ? `Auto Dip default on: uploads without an explicit auto_dip value will dip before plotting, then re-dip after about ${interval}s of pen-down plotting.`
-        : "Auto Dip default off: uploads without an explicit auto_dip value will not dip before or during plotting.";
-      if (enabled && !ready) {
+      let text = enabled && wellOn
+        ? `Auto Dip default on: new jobs will dip before plotting, then re-dip after about ${interval}s of pen-down plotting.`
+        : "Auto Dip default off: new jobs will not dip before or during plotting.";
+      if (enabled && !wellOn) {
+        text = "Auto Dip is checked, but Ink Well is OFF: new jobs will not dip before or during plotting.";
+      } else if (enabled && !ready) {
         text += " Ink well is not ready: run/confirm the test and mark it installed after setting the centre.";
       }
+      if (job) {
+        text += ` Paused job ${job.id} is using ${Number(job.dip_interval_s || interval).toFixed(1).replace(/\.0$/, "")}s; Save updates that job and the default.`;
+      } else {
+        text += " Save updates the default for future jobs.";
+      }
       $("autoDipStatus").textContent = text;
-      $("autoDipStatus").classList.toggle("warn", enabled && !ready);
+      $("autoDipStatus").classList.toggle("warn", enabled && wellOn && !ready);
     }
 
     function applyInkWell(well) {
@@ -1223,6 +1715,8 @@
       syncInput("wellDipCircleCount", well && well.dip_circle_count);
       syncInput("wellDipCircleDiameter", well && well.dip_circle_diameter_mm);
       syncInput("wellDripDwell", well && well.drip_dwell_ms);
+      syncInput("wellTravelSpeed", well && well.travel_speed_mm_s);
+      if ($("wellTravelSpeed")) $("wellTravelSpeed").max = String(Number(motionSpec().safe_manual_max_xy_speed_mm_s || 200));
       if ($("wellEnabled") && well && well.installed != null) {
         $("wellEnabled").checked = Boolean(well.installed);
       }
@@ -1232,12 +1726,13 @@
       const circleCount = well && well.dip_circle_count != null ? well.dip_circle_count : 0;
       const circleDiameter = well && well.dip_circle_diameter_mm != null ? well.dip_circle_diameter_mm : 0;
       const circleText = `${Number(circleCount)}×${Number(circleDiameter).toFixed(1)} mm circles`;
+      const travelSpeed = well && well.travel_speed_mm_s != null ? Number(well.travel_speed_mm_s) : 120;
       const staleNote = !well || well.installed || !inkWellStale(well)
         ? ""
         : " · saved centre stale; ignored while disabled";
       $("wellStatus").textContent = staleCalibration
         ? `Centre ${centreText} is stale after Home/current-position calibration changed. Re-position over the well and press Set Centre Here, or disable the ink-well check.`
-        : `Centre ${centreText} · pickup ${circleText} · test ${well && well.test_passed ? "passed" : "required"} · ink-well check ${well && well.installed ? "enabled" : "disabled"}${staleNote}`;
+        : `Centre ${centreText} · travel ${travelSpeed.toFixed(0)} mm/s · pickup ${circleText} · test ${well && well.test_passed ? "passed" : "required"} · ink-well check ${well && well.installed ? "enabled" : "disabled"}${staleNote}`;
       $("wellStatus").classList.toggle("warn", staleCalibration);
       $("wellInstalled").textContent = well && well.installed ? "Disable Ink Well Check" : "Enable Ink Well Check";
       const marker = $("wellMarker");
@@ -1340,28 +1835,28 @@
       const input = $(inputId);
       input.value = String(clamp(Number(input.value || 0) + delta, 1, 100));
       setMessage("Saving plot speed settings…");
-      savePlotSettings().catch((error) => setMessage(error.message));
+      savePlotSettings().catch((error) => showError(error));
     }
 
     function adjustPenDelay(delta) {
       const input = $("penDelayDown");
       input.value = String(clamp(Number(input.value || 0) + delta, -500, 500));
       setMessage("Saving pen-down delay…");
-      savePlotSettings().catch((error) => setMessage(error.message));
+      savePlotSettings().catch((error) => showError(error));
     }
 
     function adjustPenUpDelay(delta) {
       const input = $("penDelayUp");
       input.value = String(clamp(Number(input.value || 0) + delta, -500, 500));
       setMessage("Saving pen-up delay…");
-      savePlotSettings().catch((error) => setMessage(error.message));
+      savePlotSettings().catch((error) => showError(error));
     }
 
     function adjustPenRaiseRate(delta) {
       const input = $("penRateRaise");
       input.value = String(clamp(Number(input.value || 75) + delta, 1, 100));
       setMessage("Saving pen raise rate…");
-      savePlotSettings().catch((error) => setMessage(error.message));
+      savePlotSettings().catch((error) => showError(error));
     }
 
     async function sendPen(position) {
@@ -1388,7 +1883,7 @@
       const input = $(inputId);
       input.value = String(clamp(Number(input.value || 0) + delta, 0, 100));
       setMessage(`Moving pen ${position}…`);
-      sendPen(position).catch((error) => setMessage(error.message));
+      sendPen(position).catch((error) => showError(error));
     }
 
     function requestText(path, options = {}) {
@@ -1495,18 +1990,18 @@
       const plot = plotSettingsPayload();
       const pen = penSettingsPayload();
       storageSet("autoDipEnabled", $("autoDip").checked ? "true" : "false");
-      storageSet("autoDipIntervalS", String(clamp(Number($("dipInterval").value || 60), 0.1, 86400)));
+      storageSet("autoDipIntervalS", String(autoDipIntervalValue()));
       const form = new FormData();
       files.forEach((file) => form.append("files", file));
       if ($("layerNames").value.trim()) form.append("layer_names", $("layerNames").value.trim());
       Object.entries(Object.assign({}, plot, pen)).forEach(([key, value]) => form.append(key, String(value)));
-      const autoDipEnabled = $("autoDip").checked;
+      const autoDipEnabled = autoDipRequestedForJob();
       form.append("auto_dip", autoDipEnabled ? "true" : "false");
       form.append("ink_dip", autoDipEnabled ? "true" : "false");
       form.append("ink_dipping", autoDipEnabled ? "true" : "false");
       form.append("automatic_ink_dipping", autoDipEnabled ? "true" : "false");
       form.append("autoDip", autoDipEnabled ? "true" : "false");
-      if (autoDipEnabled) form.append("dip_interval_s", String(Number($("dipInterval").value || 60)));
+      if (autoDipEnabled) form.append("dip_interval_s", String(autoDipIntervalValue()));
 
       const response = await requestText("/plot/layers", {
         method: "POST",
@@ -1522,12 +2017,27 @@
         : "";
       setMessage(`Queued ${data.job_id}.${estimateText}`);
       const autoDipWasEnabled = $("autoDip").checked;
-      const dipInterval = $("dipInterval").value;
+      const dipInterval = autoDipIntervalValue();
       $("uploadForm").reset();
       $("autoDip").checked = autoDipWasEnabled;
-      $("dipInterval").value = dipInterval;
+      $("dipInterval").value = String(dipInterval);
       renderAutoDipStatus();
       await refresh();
+    }
+
+    async function deleteJob(jobId, button) {
+      if (!jobId) return;
+      if (!window.confirm(`Delete job ${jobId} from the list? Plot files will be kept.`)) return;
+      button.disabled = true;
+      setMessage(`Deleting job ${jobId}…`, { modal: true, kind: "busy", sticky: true });
+      try {
+        await post(`/jobs/${encodeURIComponent(jobId)}/delete`, { keep_files: true });
+        setMessage(`Deleted job ${jobId}.`, { modal: true });
+        await refresh();
+      } catch (error) {
+        button.disabled = false;
+        showError(error);
+      }
     }
 
     function statusClass(hardware) {
@@ -1597,6 +2107,21 @@
       return `<div class="job-timing">Slowest timings: ${escapeHtml(items.join(" · "))}</div>`;
     }
 
+    function jobDeleteBlocked(job) {
+      return ["queued", "queued_for_operator", "waiting_for_operator", "queued_for_resume", "running", "dipping"].includes(job.status);
+    }
+
+    function jobDeleteButton(job) {
+      const blocked = jobDeleteBlocked(job);
+      const title = blocked ? `Cannot delete while ${job.status}` : `Delete job ${job.id}`;
+      return `<button
+        class="job-delete"
+        data-delete-job-id="${escapeHtml(job.id || "")}"
+        title="${escapeHtml(title)}"
+        ${blocked ? "disabled" : ""}
+      >&times;</button>`;
+    }
+
     function jobCard(job) {
       const status = job.status || "-";
       const layer = job.current_layer_name || `Layer ${job.current_layer || job.last_completed_layer || "-"}`;
@@ -1620,7 +2145,10 @@
       return `
         <div class="job-card">
           <div class="job-id mono">${escapeHtml(job.id || "-")}</div>
-          <div class="status-pill ${escapeHtml(status)}">${escapeHtml(status)}</div>
+          <div class="toolbar">
+            <div class="status-pill ${escapeHtml(status)}">${escapeHtml(status)}</div>
+            ${jobDeleteButton(job)}
+          </div>
           <div class="job-layer">${escapeHtml(layer)}</div>
           <div class="job-meta">Created ${escapeHtml(created)} · ${escapeHtml(job.layer_count || "-")} layer(s) · ${escapeHtml(speed)} · ${escapeHtml(pen)}${escapeHtml(dip)}${escapeHtml(origin)}${escapeHtml(originWarning)}${escapeHtml(message)}</div>
           ${jobTimingLine(job)}
@@ -1633,43 +2161,53 @@
       $(elementId).innerHTML = jobs.length ? jobs.map(jobCard).join("") : `<div class="empty-state">${escapeHtml(emptyText)}</div>`;
     }
 
-    function preStartDipJob() {
-      return state.jobs
-        .filter((job) => ["queued", "queued_for_operator", "waiting_for_operator"].includes(job.status))
-        .sort((a, b) => Number(a.created_at || 0) - Number(b.created_at || 0))[0] || null;
+    function recentJobCard(job) {
+      const status = job.status || "-";
+      const layer = job.current_layer_name || job.operator_message || `Layer ${job.current_layer || job.last_completed_layer || "-"}`;
+      const created = formatTime(job.created_at);
+      const finished = job.finished_at ? ` · finished ${formatTime(job.finished_at)}` : "";
+      return `
+        <div class="job-card">
+          <div class="job-id mono">${escapeHtml(job.id || "-")}</div>
+          <div class="toolbar">
+            <div class="status-pill ${escapeHtml(status)}">${escapeHtml(status)}</div>
+            ${jobDeleteButton(job)}
+          </div>
+          <div class="job-layer">${escapeHtml(layer)}</div>
+          <div class="job-meta">Created ${escapeHtml(created)}${escapeHtml(finished)} · ${escapeHtml(job.layer_count || "-")} layer(s)</div>
+        </div>
+      `;
     }
 
-    function renderPausedDipControls() {
-      const job = state.pausedJob && state.pausedJob.auto_dip_enabled ? state.pausedJob : null;
-      const queuedJob = preStartDipJob();
+    function renderAutoDipControls() {
+      const job = pausedAutoDipJob();
       const dipNow = $("wellDipNow");
-      const intervalInput = $("wellPausedDipInterval");
-      const intervalSave = $("wellPausedDipIntervalSave");
-      const applyQueued = $("wellApplyQueuedAutoDip");
-      const status = $("wellPausedDipStatus");
-      if (!dipNow || !intervalInput || !intervalSave || !status) return;
-
+      const intervalInput = $("dipInterval");
+      if (!dipNow || !intervalInput) return;
       dipNow.disabled = !job;
-      if (applyQueued) {
-        applyQueued.disabled = !queuedJob;
-        applyQueued.dataset.jobId = queuedJob ? queuedJob.id : "";
-      }
-      intervalInput.disabled = false;
-      intervalSave.disabled = false;
       dipNow.dataset.jobId = job ? job.id : "";
-      intervalSave.dataset.jobId = job ? job.id : "";
       if (document.activeElement !== intervalInput) {
-        const interval = job && job.dip_interval_s != null
-          ? job.dip_interval_s
-          : state.config && state.config.dip_interval_s != null
-            ? state.config.dip_interval_s
-            : 60;
-        intervalInput.value = String(interval);
+        if (job && job.dip_interval_s != null) {
+          intervalInput.value = String(job.dip_interval_s);
+        } else if (state.config && state.config.dip_interval_s != null) {
+          intervalInput.value = String(state.config.dip_interval_s);
+        }
       }
-      status.textContent = job
-        ? `Paused job ${job.id}: Dip Now returns to the paused position and primes pen-down on the next resume. Interval is also saved as the default; prepared checkpoints are unchanged until rerun.`
-        : "Dip interval is saved as the default for future auto-dip jobs. Pause an auto-dip job to use Dip Now.";
-      status.classList.toggle("warn", false);
+      renderAutoDipStatus();
+    }
+
+    async function saveAutoDipSettings() {
+      const enabled = Boolean($("autoDip") && $("autoDip").checked);
+      const interval = autoDipIntervalValue();
+      const plotResult = await post("/plotter/plot_settings", { auto_dip_enabled: enabled, dip_interval_s: interval });
+      if (state.config) {
+        state.config.auto_dip_enabled = plotResult.plot_settings.auto_dip_enabled;
+        state.config.dip_interval_s = plotResult.plot_settings.dip_interval_s;
+      }
+      const job = pausedAutoDipJob();
+      if (!job) return { plotResult };
+      const jobResult = await post(`/jobs/${job.id}/dip_interval`, { dip_interval_s: interval });
+      return { plotResult, jobResult };
     }
 
     function footprintJob() {
@@ -1679,6 +2217,18 @@
         ...state.jobs,
       ];
       return candidates.find((job) => plotFootprint(job)) || null;
+    }
+
+    function previewJob() {
+      const active = state.jobs
+        .filter((job) => ["running", "paused", "queued_for_resume", "dipping", "dip_failed"].includes(job.status))
+        .sort((a, b) => Number(b.started_at || b.created_at || 0) - Number(a.started_at || a.created_at || 0))
+        .find((job) => job.plot_preview);
+      if (active) return active;
+      return state.jobs
+        .filter((job) => ["queued", "queued_for_operator", "waiting_for_operator"].includes(job.status))
+        .sort((a, b) => Number(a.created_at || 0) - Number(b.created_at || 0))
+        .find((job) => job.plot_preview) || null;
     }
 
     function plotFootprint(job) {
@@ -1696,6 +2246,12 @@
       )) || null;
     }
 
+    function previewFootprint(job) {
+      return job && job.plot_preview && job.plot_preview.footprint
+        ? job.plot_preview.footprint
+        : plotFootprint(job);
+    }
+
     function renderJobs(jobs) {
       state.jobs = jobs || [];
       const activeJobs = state.jobs.filter((job) => ACTIVE_STATUSES.has(job.status));
@@ -1707,13 +2263,12 @@
       state.pausedJob = state.jobs
         .filter((job) => job.status === "paused")
         .sort((a, b) => Number(b.created_at || 0) - Number(a.created_at || 0))[0] || null;
-      renderPausedDipControls();
+      renderAutoDipControls();
 
       const historyJobs = state.jobs.filter((job) => !ACTIVE_STATUSES.has(job.status) && !QUEUED_STATUSES.has(job.status));
-      $("jobsBody").innerHTML = historyJobs.slice(0, 12).map((job) => {
-        const layer = job.current_layer_name || job.operator_message || "-";
-        return `<tr><td class="id mono" title="${escapeHtml(job.id)}">${escapeHtml(job.id)}</td><td class="status">${escapeHtml(job.status || "-")}</td><td title="${escapeHtml(layer)}">${escapeHtml(layer)}</td></tr>`;
-      }).join("");
+      $("recentJobs").innerHTML = historyJobs.length
+        ? historyJobs.slice(0, 14).map(recentJobCard).join("")
+        : `<div class="empty-state">No recent stopped jobs.</div>`;
     }
 
     function renderState(data) {
@@ -1744,6 +2299,11 @@
       state.positionCalibrationId = displayHardware.position_calibration_id || null;
       state.positionCalibrationEnabled = displayHardware.position_calibration_enabled !== false;
       if ($("calibrationEnabled")) $("calibrationEnabled").checked = state.positionCalibrationEnabled;
+      const motorsEnabled = motorEnabledFromHardware(displayHardware);
+      state.motorsEnabled = motorsEnabled;
+      if ($("motorsEnabled") && !state.motorSwitchPending && motorsEnabled !== null) {
+        $("motorsEnabled").checked = motorsEnabled;
+      }
       state.positionKnown = positionDisplayKnown && (positionSource === "software" || Boolean(home));
       if (pos) {
         state.currentPosition = {
@@ -1758,11 +2318,13 @@
       applyPaper(displayHardware.paper || state.paper || state.config && state.config.paper || {});
       if (!state.jobs.length && data.jobs) renderJobs(data.jobs);
       const sheetOverlay = applySheetOverlay(home);
+      const previewOverlay = applyPlotPreviewOverlay(home);
       const rows = [
         ["Hardware", hardware.busy ? (hardware.message || "updating") : hardware.connected === false ? "disconnected" : "ready"],
         ["Port", displayHardware.port || "-"],
         ["Firmware", displayHardware.firmware || "-"],
         ["Pen", displayHardware.pen_up === true ? "up" : displayHardware.pen_up === false ? "down" : "-"],
+        ["Motors", motorsEnabled === true ? "ON" : motorsEnabled === false ? "OFF" : "-"],
         ["Pause Button", displayHardware.button_pressed === true ? "pressed" : displayHardware.button_pressed === false ? "clear" : "-"],
         ["Steps", `${steps.axis_1 != null ? steps.axis_1 : "-"}, ${steps.axis_2 != null ? steps.axis_2 : "-"}`],
         ["XY", positionDisplayKnown ? `${displayX.toFixed(2)} mm, ${displayY.toFixed(2)} mm` : "-"],
@@ -1776,6 +2338,10 @@
           sheetOverlay
             ? `${sheetOverlay.width.toFixed(1)} × ${sheetOverlay.height.toFixed(1)} mm ${sheetOverlay.calibratedPaper ? "paper" : "from Home"}${sheetOverlay.offBed ? " — off bed" : ""}`
             : "-",
+        ],
+        [
+          "Preview",
+          previewOverlay ? `${previewOverlay.job.id} · ${previewOverlay.width.toFixed(1)} × ${previewOverlay.height.toFixed(1)} mm${previewOverlay.offBed ? " — off bed" : ""}` : "-",
         ],
         ["Queue", server.queue_size != null ? server.queue_size : "-"],
         ["Known Jobs", state.jobs.length],
@@ -1800,11 +2366,13 @@
           $("headMarker").title = "Plot head position is not calibrated.";
         }
       }
+      const moveBlockMessage = manualMoveBlockMessage();
       document.querySelectorAll("[data-x]").forEach((button) => {
-        button.disabled = !state.positionKnown;
-        button.title = state.positionKnown ? "" : "Set current position/home before jogging.";
+        button.disabled = Boolean(moveBlockMessage);
+        button.title = moveBlockMessage;
       });
-      if (!state.positionKnown && (state.held.x || state.held.y)) {
+      $("headMarker").title = moveBlockMessage || $("headMarker").title;
+      if (moveBlockMessage && (state.held.x || state.held.y)) {
         setHeld(0, 0);
       }
 
@@ -1833,6 +2401,30 @@
     function setMarkerPosition(element, x, y) {
       element.style.left = `${(x / state.bed.width) * 100}%`;
       element.style.top = `${(1 - y / state.bed.height) * 100}%`;
+    }
+
+    function manualMoveBlockMessage() {
+      if (!state.positionKnown) return "Set current position/home before moving.";
+      if (state.motorsEnabled === false) return "Motors are OFF. Turn Motors ON before moving.";
+      return "";
+    }
+
+    function applyPositionResponse(result) {
+      const pos = result && result.position_estimate;
+      if (!pos) return;
+      state.currentPosition = {
+        x: Math.max(0, Math.min(state.bed.width, Number(pos.x_mm || 0))),
+        y: Math.max(0, Math.min(state.bed.height, Number(pos.y_mm || 0))),
+      };
+      state.positionKnown = true;
+      $("headMarker").style.display = "grid";
+      setMarkerPosition($("headMarker"), state.currentPosition.x, state.currentPosition.y);
+      $("headMarker").title = `Plot head: ${state.currentPosition.x.toFixed(2)}, ${state.currentPosition.y.toFixed(2)} mm`;
+      const home = result.home_position;
+      if (home) {
+        $("homeMarker").style.display = "grid";
+        setMarkerPosition($("homeMarker"), Number(home.x_mm), Number(home.y_mm));
+      }
     }
 
     function applySheetOverlay(home) {
@@ -1874,6 +2466,65 @@
       return { job, width, height, offBed, calibratedPaper, paper };
     }
 
+    function applyPlotPreviewOverlay(home) {
+      const marker = $("plotPreview");
+      const job = previewJob();
+      const preview = job && job.plot_preview;
+      const footprint = previewFootprint(job);
+      const layers = preview && Array.isArray(preview.layers) ? preview.layers : [];
+      const origin = preview && preview.origin || job && job.plot_origin || null;
+      if (!marker || !job || !footprint || !layers.length || (!origin && !home)) {
+        if (marker) {
+          marker.style.display = "none";
+          marker.innerHTML = "";
+          marker.dataset.jobId = "";
+          marker.dataset.previewSignature = "";
+        }
+        return null;
+      }
+
+      const width = Number(footprint.width_mm);
+      const height = Number(footprint.height_mm);
+      const x = origin ? Number(origin.x_mm) : Number(home.x_mm);
+      const y = origin ? Number(origin.y_mm) : Number(home.y_mm);
+      if (![x, y, width, height].every(Number.isFinite) || width <= 0 || height <= 0) {
+        marker.style.display = "none";
+        marker.innerHTML = "";
+        marker.dataset.jobId = "";
+        marker.dataset.previewSignature = "";
+        return null;
+      }
+
+      const offBed = x < 0 || y > state.bed.height || x + width > state.bed.width || y - height < 0;
+      marker.style.display = "block";
+      marker.style.left = `${(x / state.bed.width) * 100}%`;
+      marker.style.top = `${(1 - y / state.bed.height) * 100}%`;
+      marker.style.width = `${(width / state.bed.width) * 100}%`;
+      marker.style.height = `${(height / state.bed.height) * 100}%`;
+      marker.dataset.label = `Preview ${job.id || ""}`.trim();
+      marker.dataset.jobId = job.id || "";
+      marker.title = [
+        `Preview for job ${job.id || "-"}`,
+        `${width.toFixed(1)} × ${height.toFixed(1)} mm`,
+        offBed ? "Warning: this preview extends outside the calibrated bed." : "Within calibrated bed.",
+      ].join("\n");
+      const signature = layers.map((layer) => `${layer.index}:${layer.url}:${layer.width_mm}:${layer.height_mm}`).join("|");
+      if (marker.dataset.previewSignature !== signature) {
+        marker.innerHTML = layers.map((layer) => {
+          const layerWidth = clamp((Number(layer.width_mm) / width) * 100, 0.1, 100);
+          const layerHeight = clamp((Number(layer.height_mm) / height) * 100, 0.1, 100);
+          return `<img
+            src="${escapeHtml(layer.url || "")}"
+            alt=""
+            title="${escapeHtml(layer.name || `Layer ${layer.index || ""}`)}"
+            style="width:${layerWidth}%;height:${layerHeight}%"
+          >`;
+        }).join("");
+        marker.dataset.previewSignature = signature;
+      }
+      return { job, width, height, offBed };
+    }
+
     async function moveToTarget(target) {
       const speed = Number($("speed").value);
       await post("/plotter/move_to", {
@@ -1906,6 +2557,11 @@
     }
 
     function setHeld(x, y) {
+      if ((x || y) && manualMoveBlockMessage()) {
+        setMessage(manualMoveBlockMessage(), { modal: true, kind: "error" });
+        x = 0;
+        y = 0;
+      }
       state.held = { x, y };
       document.querySelectorAll("[data-x]").forEach((button) => {
         button.classList.toggle("active", Number(button.dataset.x) === x && Number(button.dataset.y) === y);
@@ -1932,7 +2588,7 @@
           setMessage(`Jog ${state.held.x * step}, ${state.held.y * step} mm`);
           refresh();
         } catch (error) {
-          setMessage(error.message);
+          showError(error);
           setHeld(0, 0);
         } finally {
           state.jogInFlight = false;
@@ -1960,6 +2616,12 @@
       window.addEventListener("blur", () => setHeld(0, 0));
 
       $("headMarker").addEventListener("pointerdown", (event) => {
+        const blockMessage = manualMoveBlockMessage();
+        if (blockMessage) {
+          event.preventDefault();
+          setMessage(blockMessage, { modal: true, kind: "error" });
+          return;
+        }
         event.preventDefault();
         state.draggingHead = true;
         $("headMarker").classList.add("dragging");
@@ -1991,7 +2653,7 @@
           try {
             await moveToTarget(target);
           } catch (error) {
-            setMessage(error.message);
+            showError(error);
             refresh();
           }
         } else {
@@ -2019,9 +2681,26 @@
           event.preventDefault();
           setHeld(0, 0);
         }
+        if (event.key === "Escape" && $("filesMenu")) {
+          $("filesMenu").classList.remove("open");
+          $("filesMenuButton").setAttribute("aria-expanded", "false");
+        }
+      });
+
+      $("filesMenuButton").addEventListener("click", (event) => {
+        event.stopPropagation();
+        const menu = $("filesMenu");
+        const open = !menu.classList.contains("open");
+        menu.classList.toggle("open", open);
+        $("filesMenuButton").setAttribute("aria-expanded", open ? "true" : "false");
+      });
+      document.addEventListener("click", () => {
+        $("filesMenu").classList.remove("open");
+        $("filesMenuButton").setAttribute("aria-expanded", "false");
       });
 
       $("step").addEventListener("input", () => $("stepValue").textContent = `${Number($("step").value).toFixed(1)} mm`);
+      $("statusModalClose").addEventListener("click", hideStatusModal);
       $("speed").addEventListener("input", () => {
         storageSet("manualMoveSpeed", $("speed").value);
         renderSpeedEstimates();
@@ -2029,11 +2708,11 @@
 
       $("penUp").addEventListener("click", () => {
         withButtonFeedback("penUp", "Raising pen…", () => sendPen("up"))
-          .catch((error) => setMessage(error.message));
+          .catch((error) => showError(error));
       });
       $("penDown").addEventListener("click", () => {
         withButtonFeedback("penDown", "Lowering pen…", () => sendPen("down"))
-          .catch((error) => setMessage(error.message));
+          .catch((error) => showError(error));
       });
       $("penUpMinus").addEventListener("click", () => adjustPenValue("penUpValue", -5, "up"));
       $("penUpPlus").addEventListener("click", () => adjustPenValue("penUpValue", 5, "up"));
@@ -2043,13 +2722,13 @@
         setMessage("Saving pen-up setting…");
         savePenSettings()
           .then(() => setMessage("Pen-up setting saved."))
-          .catch((error) => setMessage(error.message));
+          .catch((error) => showError(error));
       });
       $("penDownValue").addEventListener("change", () => {
         setMessage("Saving pen-down setting…");
         savePenSettings()
           .then(() => setMessage("Pen-down setting saved."))
-          .catch((error) => setMessage(error.message));
+          .catch((error) => showError(error));
       });
       $("plotDownMinus").addEventListener("click", () => adjustPlotSpeed("plotDownSpeed", -5));
       $("plotDownPlus").addEventListener("click", () => adjustPlotSpeed("plotDownSpeed", 5));
@@ -2065,27 +2744,27 @@
       $("plotUpSpeed").addEventListener("input", renderSpeedEstimates);
       $("plotDownSpeed").addEventListener("change", () => {
         setMessage("Saving pen-down plot speed…");
-        savePlotSettings().catch((error) => setMessage(error.message));
+        savePlotSettings().catch((error) => showError(error));
       });
       $("plotUpSpeed").addEventListener("change", () => {
         setMessage("Saving pen-up travel speed…");
-        savePlotSettings().catch((error) => setMessage(error.message));
+        savePlotSettings().catch((error) => showError(error));
       });
       $("penDelayDown").addEventListener("change", () => {
         setMessage("Saving pen-down delay…");
-        savePlotSettings().catch((error) => setMessage(error.message));
+        savePlotSettings().catch((error) => showError(error));
       });
       $("penDelayUp").addEventListener("change", () => {
         setMessage("Saving pen-up delay…");
-        savePlotSettings().catch((error) => setMessage(error.message));
+        savePlotSettings().catch((error) => showError(error));
       });
       $("penRateRaise").addEventListener("change", () => {
         setMessage("Saving pen raise rate…");
-        savePlotSettings().catch((error) => setMessage(error.message));
+        savePlotSettings().catch((error) => showError(error));
       });
       $("setHome").addEventListener("click", () => {
         withButtonFeedback("setHome", "Setting home…", () => post("/plotter/home/set").then(() => refresh()))
-          .catch((error) => setMessage(error.message));
+          .catch((error) => showError(error));
       });
       $("calibrateTopLeft").addEventListener("click", () => {
         withButtonFeedback(
@@ -2093,30 +2772,63 @@
           "Calibrating top-left…",
           () => post("/plotter/position/set", { x_mm: 0, y_mm: state.bed.height, reset_home: true })
         )
-          .then(() => {
-            setMessage("Calibrated at top-left.");
+          .then((result) => {
+            applyPositionResponse(result);
+            const pos = result.position_estimate || { x_mm: 0, y_mm: state.bed.height };
+            setMessage(
+              `Calibrated top-left at ${Number(pos.x_mm).toFixed(1)}, ${Number(pos.y_mm).toFixed(1)} mm.`,
+              { modal: true }
+            );
             refresh();
           })
-          .catch((error) => setMessage(error.message));
+          .catch((error) => showError(error));
       });
       $("returnHome").addEventListener("click", () => {
         withButtonFeedback("returnHome", "Returning home…", () => post("/plotter/home/return").then(() => refresh()))
-          .catch((error) => setMessage(error.message));
+          .catch((error) => showError(error));
       });
-      $("enableMotors").addEventListener("click", () => {
-        withButtonFeedback("enableMotors", "Enabling motors…", () => post("/plotter/motors", { enabled: true }).then(() => refresh()))
-          .catch((error) => setMessage(error.message));
-      });
-      $("disableMotors").addEventListener("click", () => {
-        withButtonFeedback("disableMotors", "Disabling motors…", () => post("/plotter/motors", { enabled: false }).then(() => refresh()))
-          .catch((error) => setMessage(error.message));
+      $("motorsEnabled").addEventListener("change", async () => {
+        const toggle = $("motorsEnabled");
+        const enabled = toggle.checked;
+        const previous = !enabled;
+        state.motorSwitchPending = true;
+        toggle.disabled = true;
+        setMessage(enabled ? "Enabling motors…" : "Disabling motors…", { modal: true, kind: "busy", sticky: true });
+        try {
+          await post("/plotter/motors", { enabled });
+          state.motorsEnabled = enabled;
+          if (!enabled) setHeld(0, 0);
+          setMessage(
+            enabled ? "Motors enabled." : "Motors disabled; recalibrate after re-enabling before moving.",
+            { modal: true }
+          );
+          await refresh();
+        } catch (error) {
+          toggle.checked = previous;
+          showError(error);
+        } finally {
+          state.motorSwitchPending = false;
+          toggle.disabled = false;
+        }
       });
       $("operatorContinue").addEventListener("click", () => {
         const prompt = state.lastState && state.lastState.server && state.lastState.server.operator_prompt || {};
         if (prompt.active) {
-          withButtonFeedback("operatorContinue", "Continuing…", () => post("/operator/continue", {}, false))
+          withButtonFeedback("operatorContinue", prompt.action === "start" ? "Starting…" : "Continuing…", async () => {
+            if (prompt.action === "start") {
+              const enabled = autoDipRequestedForJob();
+              const interval = autoDipIntervalValue();
+              const plotResult = await post("/plotter/plot_settings", { auto_dip_enabled: enabled, dip_interval_s: interval });
+              if (state.config) {
+                state.config.auto_dip_enabled = plotResult.plot_settings.auto_dip_enabled;
+                state.config.dip_interval_s = plotResult.plot_settings.dip_interval_s;
+              }
+              return post("/operator/continue", { auto_dip_enabled: enabled, dip_interval_s: interval }, false);
+            }
+            return post("/operator/continue", {}, false);
+          })
             .then(() => refresh())
-            .catch((error) => setMessage(error.message));
+            .catch((error) => showError(error));
           return;
         }
         if (state.pausedJob) {
@@ -2134,7 +2846,7 @@
               setMessage(`Resuming ${jobId} with current Speeds settings`);
               refresh();
             })
-            .catch((error) => setMessage(error.message));
+            .catch((error) => showError(error));
           return;
         }
         setMessage("No operator prompt or paused job to continue.");
@@ -2145,25 +2857,35 @@
         withButtonFeedback("pauseActive", "Requesting pause…", () => post(`/jobs/${runningJob.id}/pause`))
           .then(() => setMessage(`Pause requested for ${runningJob.id}; AxiDraw will stop at a safe command boundary`))
           .then(() => refresh())
-          .catch((error) => setMessage(error.message));
+          .catch((error) => showError(error));
       });
       $("clearJobs").addEventListener("click", () => {
         withButtonFeedback("clearJobs", "Clearing jobs…", () => post("/jobs/clear", { keep_files: true }).then(() => refresh()))
-          .catch((error) => setMessage(error.message));
+          .then(() => {
+            $("filesMenu").classList.remove("open");
+            $("filesMenuButton").setAttribute("aria-expanded", "false");
+          })
+          .catch((error) => showError(error));
+      });
+      document.addEventListener("click", (event) => {
+        const button = event.target.closest("[data-delete-job-id]");
+        if (!button || button.disabled) return;
+        event.preventDefault();
+        deleteJob(button.dataset.deleteJobId, button);
       });
       $("uploadForm").addEventListener("submit", (event) => {
         withButtonFeedback("uploadSubmit", "Preparing plot…", () => uploadPlot(event))
-          .catch((error) => setMessage(error.message));
+          .catch((error) => showError(error));
       });
       $("wellSetCentre").addEventListener("click", () => {
         withButtonFeedback("wellSetCentre", "Saving centre…", () => saveInkWell({ centre_from_current: true }))
           .then(() => setMessage("Ink well centre saved at the current plot-head position; test cycle required."))
-          .catch((error) => setMessage(error.message));
+          .catch((error) => showError(error));
       });
       $("wellSave").addEventListener("click", () => {
         withButtonFeedback("wellSave", "Saving setup…", () => saveInkWell())
           .then(() => setMessage("Ink well setup saved; run a test cycle before installation."))
-          .catch((error) => setMessage(error.message));
+          .catch((error) => showError(error));
       });
       $("wellTest").addEventListener("click", () => {
         withButtonFeedback("wellTest", "Starting test cycle…", () => saveInkWell().then(() => post("/plotter/ink_well/test")))
@@ -2172,7 +2894,7 @@
             setMessage(result.message);
             refresh();
           })
-          .catch((error) => setMessage(error.message));
+          .catch((error) => showError(error));
       });
       $("wellConfirmTest").addEventListener("click", () => {
         withButtonFeedback("wellConfirmTest", "Confirming test…", () => post("/plotter/ink_well/confirm_test"))
@@ -2180,7 +2902,7 @@
             applyInkWell(result.ink_well);
             setMessage(result.message);
           })
-          .catch((error) => setMessage(error.message));
+          .catch((error) => showError(error));
       });
       $("wellInstalled").addEventListener("click", () => {
         withButtonFeedback("wellInstalled", "Updating install state…", () => post("/plotter/ink_well", { installed: !Boolean(state.inkWell && state.inkWell.installed) }))
@@ -2188,7 +2910,7 @@
             applyInkWell(result.ink_well);
             setMessage(result.ink_well.installed ? "Ink well check enabled; keep-out is active for every upload/rerun." : "Ink well check disabled; saved setup is retained but uploads/reruns will ignore the well.");
           })
-          .catch((error) => setMessage(error.message));
+          .catch((error) => showError(error));
       });
       $("wellEnabled").addEventListener("change", () => {
         const enabled = $("wellEnabled").checked;
@@ -2199,46 +2921,21 @@
           })
           .catch((error) => {
             $("wellEnabled").checked = !enabled;
-            setMessage(error.message);
+            showError(error);
           });
       });
       $("autoDip").addEventListener("change", renderAutoDipStatus);
       $("dipInterval").addEventListener("input", renderAutoDipStatus);
-      $("wellSaveAutoDipDefault").addEventListener("click", () => {
-        withButtonFeedback("wellSaveAutoDipDefault", "Saving auto-dip default…", () => savePlotSettings())
-          .then(() => setMessage(`Auto-dip default ${$("autoDip").checked ? "enabled" : "disabled"}; interval ${Number($("dipInterval").value || 60)}s.`))
-          .then(() => refresh())
-          .catch((error) => setMessage(error.message));
-      });
-      $("wellApplyQueuedAutoDip").addEventListener("click", () => {
-        const jobId = $("wellApplyQueuedAutoDip").dataset.jobId;
-        if (!jobId) {
-          setMessage("No queued/pre-start job is available. This can only be changed before plotting starts.");
-          return;
-        }
-        const enabled = $("autoDip").checked;
-        const interval = clamp(Number($("dipInterval").value || 60), 0.1, 86400);
-        withButtonFeedback(
-          "wellApplyQueuedAutoDip",
-          enabled ? "Preparing job dips…" : "Disabling job dips…",
-          async () => {
-            const plotResult = await post("/plotter/plot_settings", { auto_dip_enabled: enabled, dip_interval_s: interval });
-            if (state.config) {
-              state.config.auto_dip_enabled = plotResult.plot_settings.auto_dip_enabled;
-              state.config.dip_interval_s = plotResult.plot_settings.dip_interval_s;
-            }
-            return post(`/jobs/${jobId}/auto_dip`, { auto_dip_enabled: enabled, dip_interval_s: interval });
-          }
-        )
-          .then((result) => {
-            const estimates = result.dip_estimates || [];
-            const estimateText = estimates.length && result.auto_dip_enabled
-              ? ` Estimated dips: ${estimates.reduce((sum, item) => sum + Number(item.estimated_dip_count_per_layer || 0), 0)}.`
-              : "";
-            setMessage(`${result.message || "Queued job updated."}${estimateText}`);
+      $("wellSaveAutoDip").addEventListener("click", () => {
+        withButtonFeedback("wellSaveAutoDip", "Saving auto-dip…", () => saveAutoDipSettings())
+          .then(({ plotResult, jobResult }) => {
+            const plotText = plotResult.plot_settings.auto_dip_enabled ? "enabled" : "disabled";
+            const interval = Number(plotResult.plot_settings.dip_interval_s || 60);
+            const jobText = jobResult && jobResult.message ? ` ${jobResult.message}` : "";
+            setMessage(`Auto-dip default ${plotText}; interval ${interval}s.${jobText}`);
             refresh();
           })
-          .catch((error) => setMessage(error.message));
+          .catch((error) => showError(error));
       });
       $("paperSetTopRight").addEventListener("click", () => {
         withButtonFeedback("paperSetTopRight", "Saving paper top-right…", () => savePaper({ top_right_from_current: true }))
@@ -2246,7 +2943,7 @@
             setMessage("Paper top-right saved at the current plot-head position.");
             refresh();
           })
-          .catch((error) => setMessage(error.message));
+          .catch((error) => showError(error));
       });
       $("paperUseAsHome").addEventListener("click", () => {
         const topRight = state.paper && state.paper.top_right;
@@ -2267,7 +2964,7 @@
             setMessage("Current position and Home set to the saved paper top-right. Use only when the head is physically at that corner.");
             refresh();
           })
-          .catch((error) => setMessage(error.message));
+          .catch((error) => showError(error));
       });
       $("paperSave").addEventListener("click", () => {
         withButtonFeedback("paperSave", "Saving paper…", () => savePaper())
@@ -2275,15 +2972,15 @@
             setMessage("Paper settings saved.");
             refresh();
           })
-          .catch((error) => setMessage(error.message));
+          .catch((error) => showError(error));
       });
       $("paperSize").addEventListener("change", () => {
         setMessage("Saving paper size…");
-        savePaper().then(() => refresh()).catch((error) => setMessage(error.message));
+        savePaper().then(() => refresh()).catch((error) => showError(error));
       });
       $("paperOrientation").addEventListener("change", () => {
         setMessage("Saving paper orientation…");
-        savePaper().then(() => refresh()).catch((error) => setMessage(error.message));
+        savePaper().then(() => refresh()).catch((error) => showError(error));
       });
       $("paperEnabled").addEventListener("change", () => {
         const enabled = $("paperEnabled").checked;
@@ -2295,7 +2992,7 @@
           })
           .catch((error) => {
             $("paperEnabled").checked = !enabled;
-            setMessage(error.message);
+            showError(error);
           });
       });
       $("calibrationEnabled").addEventListener("change", () => {
@@ -2315,7 +3012,7 @@
           })
           .catch((error) => {
             $("calibrationEnabled").checked = !enabled;
-            setMessage(error.message);
+            showError(error);
           });
       });
       document.addEventListener("click", (event) => {
@@ -2330,7 +3027,7 @@
             setMessage(`Dip recovery requested: ${button.dataset.dipAction}`);
             refresh();
           })
-          .catch((error) => setMessage(error.message));
+          .catch((error) => showError(error));
       });
       $("wellDipNow").addEventListener("click", () => {
         const jobId = $("wellDipNow").dataset.jobId;
@@ -2347,32 +3044,14 @@
             setMessage(result.message || "Manual dip completed.");
             refresh();
           })
-          .catch((error) => setMessage(error.message));
-      });
-      $("wellPausedDipIntervalSave").addEventListener("click", () => {
-        const jobId = $("wellPausedDipIntervalSave").dataset.jobId;
-        const interval = Number($("wellPausedDipInterval").value || 0);
-        withButtonFeedback(
-          "wellPausedDipIntervalSave",
-          "Saving interval…",
-          async () => {
-            const plotResult = await post("/plotter/plot_settings", { dip_interval_s: interval });
-            if (state.config) state.config.dip_interval_s = plotResult.plot_settings.dip_interval_s;
-            if (!jobId) return plotResult;
-            return post(`/jobs/${jobId}/dip_interval`, { dip_interval_s: interval });
-          }
-        )
-          .then((result) => {
-            setMessage(result.message || `Default dip interval set to ${interval}s.`);
-            refresh();
-          })
-          .catch((error) => setMessage(error.message));
+          .catch((error) => showError(error));
       });
     }
 
     async function main() {
       setStartupMessage("Starting control page…");
       await loadConfig();
+      setupCollapsibleSections();
       bindControls();
       refresh();
       jogLoop();
