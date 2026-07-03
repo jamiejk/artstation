@@ -2192,10 +2192,30 @@ def worker() -> None:
         job_id = job_queue.get()
 
         with jobs_lock:
-            job = jobs[job_id]
-            if job.get("status") == "cancelled":
+            job = jobs.get(job_id)
+            if job is None:
                 job_queue.task_done()
                 continue
+            status = job.get("status")
+            if status == "cancelled":
+                job_queue.task_done()
+                continue
+
+        # Resume and dip-recovery go through the same queue so the
+        # single-worker invariant holds (no ad-hoc threads).
+        if status == "queued_for_resume":
+            try:
+                with jobs_lock:
+                    retry_dip = jobs[job_id].pop("dip_recovery_retry", None)
+                if retry_dip is not None:
+                    recover_dip_failed_job(job_id, retry_dip=retry_dip)
+                else:
+                    resume_paused_job(job_id)
+            except Exception as exc:
+                update_job(job_id, status="failed", error=repr(exc), finished_at=now())
+            finally:
+                job_queue.task_done()
+            continue
 
         log_path = Path(job["log_path"])
 
@@ -2832,7 +2852,7 @@ def resume_job(
         job["operator_message"] = "Resume requested."
         save_job_unlocked(job_id)
 
-    threading.Thread(target=resume_paused_job, args=(job_id,), daemon=True).start()
+    job_queue.put(job_id)
 
     return {
         "ok": True,
@@ -2841,7 +2861,7 @@ def resume_job(
         "paused_layer": paused_layer_number,
         "plot_settings": resume_plot_settings,
         "pen_settings": resume_pen_settings,
-        "message": "Resume started.",
+        "message": "Resume queued.",
     }
 
 
@@ -2870,14 +2890,11 @@ def recover_dip_job(
                 detail="No verified return position is available; cancel and rerun after recalibration",
             )
         job["status"] = "queued_for_resume"
+        job["dip_recovery_retry"] = action == "retry"
         job["operator_message"] = f"Dip recovery requested: {action}."
         save_job_unlocked(job_id)
 
-    threading.Thread(
-        target=recover_dip_failed_job,
-        kwargs={"job_id": job_id, "retry_dip": action == "retry"},
-        daemon=True,
-    ).start()
+    job_queue.put(job_id)
     return {
         "ok": True,
         "job_id": job_id,
