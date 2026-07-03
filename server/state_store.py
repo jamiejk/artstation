@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from pathlib import Path
 import json
+import os
 
 
 def read_json(path: Path, *, default=None):
@@ -19,12 +20,16 @@ def read_json(path: Path, *, default=None):
 
 def write_json(path: Path, data: dict, *, atomic: bool = True) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
+    payload = json.dumps(data, indent=2)
     if atomic:
         tmp = path.with_suffix(path.suffix + ".tmp")
-        tmp.write_text(json.dumps(data, indent=2), encoding="utf-8")
+        with tmp.open("w", encoding="utf-8") as fh:
+            fh.write(payload)
+            fh.flush()
+            os.fsync(fh.fileno())
         tmp.replace(path)
         return
-    path.write_text(json.dumps(data, indent=2), encoding="utf-8")
+    path.write_text(payload, encoding="utf-8")
 
 
 def deep_copy_jsonable(data):

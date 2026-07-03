@@ -32,6 +32,9 @@ except ImportError:
     )
 
 
+AXICLI_DIGEST_TIMEOUT_S = 120
+
+
 def axicli_cmd(axicli: str, axicli_config: Path) -> list[str]:
     cmd = [axicli]
     if axicli_config.exists():
@@ -55,12 +58,19 @@ def generate_plot_digest(input_svg: Path, output_svg: Path, job_settings: dict, 
         "--pen_pos_up",
         str(job_settings["pen_pos_up"]),
     ]
-    proc = subprocess.run(
-        cmd,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.STDOUT,
-        text=True,
-    )
+    try:
+        proc = subprocess.run(
+            cmd,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            timeout=AXICLI_DIGEST_TIMEOUT_S,
+        )
+    except subprocess.TimeoutExpired as exc:
+        raise ValueError(
+            f"AxiDraw did not produce a plot digest within {AXICLI_DIGEST_TIMEOUT_S}s; "
+            f"the process may be stuck or the serial port may be locked"
+        ) from exc
     if proc.returncode != 0 or not output_svg.exists():
         raise ValueError(f"AxiDraw could not prepare the plot digest: {proc.stdout[-2000:]}")
 

@@ -11,6 +11,7 @@ import queue
 import threading
 import subprocess
 import signal
+import secrets
 import json
 import math
 import serial
@@ -794,7 +795,7 @@ def load_jobs() -> None:
 
 
 def check_token(x_plotter_token: Optional[str]) -> None:
-    if PLOTTER_TOKEN and x_plotter_token != PLOTTER_TOKEN:
+    if PLOTTER_TOKEN and not secrets.compare_digest(x_plotter_token or "", PLOTTER_TOKEN):
         raise HTTPException(status_code=401, detail="Bad or missing X-Plotter-Token")
 
 
@@ -950,18 +951,24 @@ def set_active_process(proc: subprocess.Popen | None, job_id: str | None = None)
 
 
 def run_axicli_command(cmd: list[str], log, *, job_id: str | None = None) -> int:
+    # Hold hardware_lock only for Popen + registration, not for proc.wait().
+    # Releasing before wait() lets the telemetry worker run; it checks
+    # active_process to avoid touching the serial port while axicli owns it.
+    # active_process_lock is held across Popen + set_active_process so that
+    # pause_job cannot observe a half-registered process (SIGINT race fix).
     with hardware_lock:
-        proc = subprocess.Popen(
-            cmd,
-            stdout=log,
-            stderr=subprocess.STDOUT,
-            text=True,
-        )
-        set_active_process(proc, job_id)
-        try:
-            return proc.wait()
-        finally:
-            set_active_process(None, None)
+        with active_process_lock:
+            proc = subprocess.Popen(
+                cmd,
+                stdout=log,
+                stderr=subprocess.STDOUT,
+                text=True,
+            )
+            set_active_process(proc, job_id)
+    try:
+        return proc.wait()
+    finally:
+        set_active_process(None, None)
 
 
 def axicli_cmd() -> list[str]:
@@ -1799,6 +1806,17 @@ def read_hardware_state_from_device(previous: dict | None = None, *, full: bool 
 def poll_hardware_state_once(*, full: bool = False) -> bool:
     if manual_hardware_priority_active():
         return False
+    # While an axicli subprocess owns the serial port, do not attempt to read
+    # the device.  Mark the cache as busy/stale so the UI shows a meaningful
+    # state instead of frozen telemetry.
+    with active_process_lock:
+        has_active_process = active_process is not None
+    if has_active_process:
+        with hardware_state_lock:
+            cached_hardware_state[busy] = True
+            cached_hardware_state[telemetry_stale] = True
+            cached_hardware_state[telemetry_updated_at] = now()
+        return True
     if not hardware_lock.acquire(blocking=False):
         return False
     try:
