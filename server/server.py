@@ -26,6 +26,7 @@ try:
     from server import settings as settings_utils
     from server import svg_utils
     from server import timing_log
+    from server import auth
 except ImportError:
     import hardware
     import job_model
@@ -36,6 +37,7 @@ except ImportError:
     import settings as settings_utils
     import svg_utils
     import timing_log
+    import auth
 
 try:
     from server.ink_dip import (
@@ -185,14 +187,6 @@ JOB_DELETE_BLOCKED_STATUSES = {
 }
 
 
-def required_plotter_token(env: dict | None = None) -> str:
-    env = os.environ if env is None else env
-    token = env.get("PLOTTER_TOKEN", "").strip()
-    if not token:
-        raise RuntimeError("PLOTTER_TOKEN must be set in the service environment")
-    return token
-
-
 def cancel_job_record(job: dict, *, reason: str) -> bool:
     if job.get("status") not in ACTIVE_CANCELLABLE_STATUSES:
         return False
@@ -240,7 +234,10 @@ def validate_svg_file(path: Path) -> dict:
     )
 
 
-PLOTTER_TOKEN = required_plotter_token()
+PLOTTER_TOKEN = auth.required_plotter_token()
+auth.configure(PLOTTER_TOKEN)
+check_token = auth.check_token
+require_localhost = auth.require_localhost
 MAX_PLOTTER_WIDTH_MM = float(os.environ.get("MAX_PLOTTER_WIDTH_MM", "609.6"))
 MAX_PLOTTER_HEIGHT_MM = float(os.environ.get("MAX_PLOTTER_HEIGHT_MM", "914.4"))
 BED_WIDTH_MM = float(os.environ.get("PLOTTER_BED_WIDTH_MM", "609.6"))
@@ -792,21 +789,6 @@ def load_jobs() -> None:
 
             except Exception as exc:
                 print(f"Could not load {path}: {exc}", flush=True)
-
-
-def check_token(x_plotter_token: Optional[str]) -> None:
-    if PLOTTER_TOKEN and not secrets.compare_digest(x_plotter_token or "", PLOTTER_TOKEN):
-        raise HTTPException(status_code=401, detail="Bad or missing X-Plotter-Token")
-
-
-def require_localhost(request: Request) -> None:
-    host = request.client.host if request.client else ""
-
-    if host not in {"127.0.0.1", "::1"}:
-        raise HTTPException(
-            status_code=403,
-            detail="Operator controls are only available from the Linux box itself.",
-        )
 
 
 def update_job(job_id: str, **fields) -> None:
