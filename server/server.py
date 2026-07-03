@@ -2441,6 +2441,110 @@ def control_config(request: Request):
     }
 
 
+def _build_layer_record(
+    *,
+    job_dir: Path,
+    index: int,
+    name: str,
+    original_filename: str,
+    input_svg: Path,
+    settings: dict,
+    well_snapshot: dict | None,
+    home: dict | None,
+    auto_dip: bool,
+    dip_interval_s: float | None,
+) -> dict:
+    """Build a single layer dict with SVG validation and optional ink-well analysis."""
+    layer_dir = job_dir / f"layer_{index:02d}"
+    layer_dir.mkdir(parents=True, exist_ok=True)
+    progress_svg = layer_dir / "progress.svg"
+    digest_svg = layer_dir / "plot_digest.svg"
+
+    try:
+        svg_metrics = validate_svg_file(input_svg)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    layer: dict = {
+        "index": index,
+        "name": name,
+        "original_filename": original_filename,
+        "input_svg": str(input_svg),
+        "progress_svg": str(progress_svg),
+        "svg_metrics": svg_metrics,
+        "plot_digest_svg": None,
+        "plot_svg": None,
+        "ink_analysis": None,
+    }
+
+    if well_snapshot is not None:
+        try:
+            analysis_origin = plot_origin_for_layer_metrics(svg_metrics) or home
+            analysis = analyse_layer_for_ink_well(
+                input_svg,
+                digest_svg,
+                job_settings=settings,
+                home=analysis_origin,
+                well=well_snapshot,
+                dip_interval_s=dip_interval_s if auto_dip else None,
+            )
+            layer["plot_digest_svg"] = str(digest_svg)
+            layer["ink_analysis"] = analysis
+            if auto_dip:
+                prepare_auto_dip_layer(layer, analysis)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    return layer
+
+
+def _build_job_record(
+    *,
+    job_id: str,
+    layers: list[dict],
+    log_path: Path,
+    settings: dict,
+    well_snapshot: dict | None,
+    auto_dip: bool,
+    dip_interval_s: float | None,
+    home: dict | None,
+    extra_fields: dict | None = None,
+) -> dict:
+    """Assemble a queued job dict and apply paper alignment."""
+    job = {
+        "id": job_id,
+        "status": "queued",
+        "created_at": now(),
+        "layer_count": len(layers),
+        "layers": layers,
+        "log_path": str(log_path),
+        "speed_pendown": settings["speed_pendown"],
+        "speed_penup": settings["speed_penup"],
+        "pen_delay_down": settings["pen_delay_down"],
+        "pen_delay_up": settings["pen_delay_up"],
+        "pen_rate_raise": settings["pen_rate_raise"],
+        "pen_pos_down": settings["pen_pos_down"],
+        "pen_pos_up": settings["pen_pos_up"],
+        "ink_well": well_snapshot,
+        "auto_dip_enabled": auto_dip,
+        "dip_interval_s": dip_interval_s if auto_dip else None,
+        "dip_count": 0,
+        "dip_failure": None,
+        "current_layer": None,
+        "current_layer_name": None,
+        "last_completed_layer": None,
+        "operator_message": None,
+        "plot_start_position": home,
+    }
+    if extra_fields:
+        job.update(extra_fields)
+    try:
+        apply_paper_alignment_to_job(job)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return job
+
+
 @app.post("/plot/layers")
 async def plot_layers(
     files: List[UploadFile] = File(...),
@@ -2507,6 +2611,9 @@ async def plot_layers(
     upload_settings = {
         "speed_pendown": speed_pendown,
         "speed_penup": speed_penup,
+        "pen_delay_down": pen_delay_down,
+        "pen_delay_up": pen_delay_up,
+        "pen_rate_raise": pen_rate_raise,
         "pen_pos_down": pen_pos_down,
         "pen_pos_up": pen_pos_up,
     }
@@ -2558,39 +2665,11 @@ async def plot_layers(
             )
 
         layer_dir = this_job_dir / f"layer_{idx:02d}"
-        layer_dir.mkdir(parents=True, exist_ok=True)
-
         input_svg = layer_dir / "input.svg"
-        progress_svg = layer_dir / "progress.svg"
-        digest_svg = layer_dir / "plot_digest.svg"
+        layer_dir.mkdir(parents=True, exist_ok=True)
 
         with input_svg.open("wb") as out:
             shutil.copyfileobj(uploaded.file, out)
-
-        try:
-            svg_metrics = validate_svg_file(input_svg)
-        except ValueError as exc:
-            raise HTTPException(status_code=400, detail=str(exc)) from exc
-
-        ink_analysis = None
-        if well_snapshot is not None:
-            try:
-                analysis_origin = plot_origin_for_layer_metrics(svg_metrics) or upload_home
-                ink_analysis = analyse_layer_for_ink_well(
-                    input_svg,
-                    digest_svg,
-                    job_settings=upload_settings,
-                    home=analysis_origin,
-                    well=well_snapshot,
-                    dip_interval_s=dip_interval_s if auto_dip else None,
-                )
-                if auto_dip:
-                    layer_stub = {
-                        "plot_digest_svg": str(digest_svg),
-                    }
-                    prepare_auto_dip_layer(layer_stub, ink_analysis)
-            except ValueError as exc:
-                raise HTTPException(status_code=400, detail=str(exc)) from exc
 
         name = (
             names[idx - 1]
@@ -2599,50 +2678,32 @@ async def plot_layers(
         )
 
         layers.append(
-            {
-                "index": idx,
-                "name": name,
-                "original_filename": uploaded.filename,
-                "input_svg": str(input_svg),
-                "progress_svg": str(progress_svg),
-                "plot_digest_svg": str(digest_svg) if ink_analysis is not None else None,
-                "plot_svg": layer_stub.get("plot_svg") if auto_dip else None,
-                "svg_metrics": svg_metrics,
-                "ink_analysis": ink_analysis,
-            }
+            _build_layer_record(
+                job_dir=this_job_dir,
+                index=idx,
+                name=name,
+                original_filename=uploaded.filename,
+                input_svg=input_svg,
+                settings=upload_settings,
+                well_snapshot=well_snapshot,
+                home=upload_home,
+                auto_dip=auto_dip,
+                dip_interval_s=dip_interval_s,
+            )
         )
 
     log_path = LOGS_DIR / f"{job_id}.log"
 
-    job = {
-        "id": job_id,
-        "status": "queued",
-        "created_at": now(),
-        "layer_count": len(layers),
-        "layers": layers,
-        "log_path": str(log_path),
-        "speed_pendown": speed_pendown,
-        "speed_penup": speed_penup,
-        "pen_delay_down": pen_delay_down,
-        "pen_delay_up": pen_delay_up,
-        "pen_rate_raise": pen_rate_raise,
-        "pen_pos_down": pen_pos_down,
-        "pen_pos_up": pen_pos_up,
-        "ink_well": well_snapshot,
-        "auto_dip_enabled": auto_dip,
-        "dip_interval_s": dip_interval_s if auto_dip else None,
-        "dip_count": 0,
-        "dip_failure": None,
-        "current_layer": None,
-        "current_layer_name": None,
-        "last_completed_layer": None,
-        "operator_message": None,
-        "plot_start_position": upload_home,
-    }
-    try:
-        apply_paper_alignment_to_job(job)
-    except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    job = _build_job_record(
+        job_id=job_id,
+        layers=layers,
+        log_path=log_path,
+        settings=upload_settings,
+        well_snapshot=well_snapshot,
+        auto_dip=auto_dip,
+        dip_interval_s=dip_interval_s,
+        home=upload_home,
+    )
 
     response_payload = {
         "job_id": job_id,
@@ -3123,12 +3184,6 @@ def rerun_job(
     new_job_dir.mkdir(parents=True, exist_ok=True)
 
     current_plot_defaults = current_plot_settings()
-    rerun_settings = {
-        "speed_pendown": current_plot_defaults["speed_pendown"],
-        "speed_penup": current_plot_defaults["speed_penup"],
-        "pen_pos_down": original.get("pen_pos_down", 35),
-        "pen_pos_up": original.get("pen_pos_up", 65),
-    }
     auto_dip = bool(original.get("auto_dip_enabled"))
     dip_interval_s = original.get("dip_interval_s")
     well_settings = current_ink_well_settings()
@@ -3144,68 +3199,7 @@ def rerun_job(
             detail = exc.detail if isinstance(exc, HTTPException) else str(exc)
             raise HTTPException(status_code=409, detail=detail) from exc
 
-    new_layers = []
-
-    for layer in original["layers"]:
-        idx = layer["index"]
-
-        layer_dir = new_job_dir / f"layer_{idx:02d}"
-        layer_dir.mkdir(parents=True, exist_ok=True)
-
-        old_input = Path(layer["input_svg"])
-        new_input = layer_dir / "input.svg"
-        new_progress = layer_dir / "progress.svg"
-        new_digest = layer_dir / "plot_digest.svg"
-
-        if not old_input.exists():
-            raise HTTPException(
-                status_code=400,
-                detail=f"Original layer file missing: {old_input}",
-            )
-
-        shutil.copy(old_input, new_input)
-
-        new_layer = {
-            "index": idx,
-            "name": layer["name"],
-            "original_filename": layer.get(
-                "original_filename",
-                f"layer_{idx:02d}.svg",
-            ),
-            "input_svg": str(new_input),
-            "progress_svg": str(new_progress),
-            "svg_metrics": validate_svg_file(new_input),
-        }
-        if well_snapshot is not None:
-            try:
-                analysis_origin = plot_origin_for_layer_metrics(new_layer["svg_metrics"]) or rerun_home
-                analysis = analyse_layer_for_ink_well(
-                    new_input,
-                    new_digest,
-                    job_settings=rerun_settings,
-                    home=analysis_origin,
-                    well=well_snapshot,
-                    dip_interval_s=dip_interval_s if auto_dip else None,
-                )
-                new_layer["plot_digest_svg"] = str(new_digest)
-                new_layer["ink_analysis"] = analysis
-                if auto_dip:
-                    prepare_auto_dip_layer(new_layer, analysis)
-            except ValueError as exc:
-                raise HTTPException(status_code=400, detail=str(exc)) from exc
-        new_layers.append(new_layer)
-
-    log_path = LOGS_DIR / f"{new_job_id}.log"
-
-    new_job = {
-        "id": new_job_id,
-        "status": "queued",
-        "created_at": now(),
-        "layer_count": len(new_layers),
-        "layers": new_layers,
-        "log_path": str(log_path),
-        # Reruns use the current Speeds-panel values so an operator can tune
-        # plot motion or pen timing before repeating the same artwork.
+    rerun_settings = {
         "speed_pendown": current_plot_defaults["speed_pendown"],
         "speed_penup": current_plot_defaults["speed_penup"],
         "pen_delay_down": current_plot_defaults["pen_delay_down"],
@@ -3213,22 +3207,52 @@ def rerun_job(
         "pen_rate_raise": current_plot_defaults["pen_rate_raise"],
         "pen_pos_down": original.get("pen_pos_down", 35),
         "pen_pos_up": original.get("pen_pos_up", 65),
-        "ink_well": well_snapshot,
-        "auto_dip_enabled": auto_dip,
-        "dip_interval_s": dip_interval_s if auto_dip else None,
-        "dip_count": 0,
-        "dip_failure": None,
-        "current_layer": None,
-        "current_layer_name": None,
-        "last_completed_layer": None,
-        "operator_message": None,
-        "rerun_of": job_id,
-        "plot_start_position": rerun_home,
     }
-    try:
-        apply_paper_alignment_to_job(new_job)
-    except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    new_layers = []
+
+    for layer in original["layers"]:
+        idx = layer["index"]
+        old_input = Path(layer["input_svg"])
+        if not old_input.exists():
+            raise HTTPException(
+                status_code=400,
+                detail=f"Original layer file missing: {old_input}",
+            )
+
+        layer_dir = new_job_dir / f"layer_{idx:02d}"
+        new_input = layer_dir / "input.svg"
+        layer_dir.mkdir(parents=True, exist_ok=True)
+        shutil.copy(old_input, new_input)
+
+        new_layers.append(
+            _build_layer_record(
+                job_dir=new_job_dir,
+                index=idx,
+                name=layer["name"],
+                original_filename=layer.get("original_filename", f"layer_{idx:02d}.svg"),
+                input_svg=new_input,
+                settings=rerun_settings,
+                well_snapshot=well_snapshot,
+                home=rerun_home,
+                auto_dip=auto_dip,
+                dip_interval_s=dip_interval_s,
+            )
+        )
+
+    log_path = LOGS_DIR / f"{new_job_id}.log"
+
+    new_job = _build_job_record(
+        job_id=new_job_id,
+        layers=new_layers,
+        log_path=log_path,
+        settings=rerun_settings,
+        well_snapshot=well_snapshot,
+        auto_dip=auto_dip,
+        dip_interval_s=dip_interval_s,
+        home=rerun_home,
+        extra_fields={"rerun_of": job_id},
+    )
 
     with jobs_lock:
         jobs[new_job_id] = new_job
