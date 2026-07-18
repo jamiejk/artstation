@@ -2272,7 +2272,6 @@
       const candidates = [
         ...state.jobs.filter((job) => ["running", "paused", "queued_for_resume", "dipping", "dip_failed"].includes(job.status)),
         ...state.jobs.filter((job) => ["queued", "queued_for_operator", "waiting_for_operator"].includes(job.status)),
-        ...state.jobs,
       ];
       return candidates.find((job) => plotFootprint(job)) || null;
     }
