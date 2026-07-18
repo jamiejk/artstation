@@ -435,8 +435,7 @@
 
     .plot-area {
       position: relative;
-      width: 75%;
-      margin: 0 auto;
+      width: 100%;
       aspect-ratio: 2 / 3;
       min-height: 240px;
       background:
@@ -450,19 +449,23 @@
       touch-action: none;
     }
 
+    .bed-stage {
+      display: grid;
+      grid-template-columns: 136px minmax(0, 1fr);
+      gap: 12px;
+      align-items: start;
+      max-width: 612px;
+      margin: 0 auto;
+    }
+
     .bed-jog {
-      position: absolute;
-      top: 10px;
-      left: 10px;
-      z-index: 24;
       display: grid;
       gap: 8px;
       width: 136px;
       padding: 9px;
       border: 1px solid rgba(174, 184, 196, 0.9);
       border-radius: 7px;
-      background: rgba(255, 255, 255, 0.92);
-      box-shadow: 0 8px 22px rgba(16, 24, 40, 0.16);
+      background: #ffffff;
       touch-action: manipulation;
     }
 
@@ -952,10 +955,14 @@
     @media (max-width: 820px) {
       main { grid-template-columns: 1fr; }
       .bed-layout { grid-template-columns: 1fr; }
-      .plot-area { width: 100%; min-height: 300px; }
+      .plot-area { min-height: 300px; }
+    }
+
+    @media (max-width: 620px) {
+      .bed-stage {
+        grid-template-columns: 1fr;
+      }
       .bed-jog {
-        top: 8px;
-        left: 8px;
         width: 124px;
         padding: 7px;
         gap: 6px;
@@ -1229,7 +1236,7 @@
             <span><span class="kbd">Arrow keys</span> hold to jog</span>
           </div>
           <div class="section-body">
-            <div class="plot-area" id="plotArea">
+            <div class="bed-stage">
               <div class="bed-jog" aria-label="Jog controls">
                 <div class="jog" id="jog">
                   <button class="up" data-x="0" data-y="1" title="Jog up" aria-label="Jog up">&uarr;</button>
@@ -1244,26 +1251,28 @@
                   <input id="step" type="range" min="0.2" max="10" step="0.2" value="2.0" title="Jog distance per pulse">
                 </div>
               </div>
-              <div class="axis-x"></div>
-              <div class="axis-y"></div>
-              <div class="pcb-marker"></div>
-              <div class="calibration-marker" title="Calibration point: top-left, nearest PCB">C</div>
-              <div class="sheet-marker" id="sheetMarker"></div>
-              <div class="plot-preview" id="plotPreview"></div>
-              <div class="home-marker" id="homeMarker" title="User-defined home">+</div>
-              <div class="bed-label bottom" style="left: 0%">0</div>
-              <div class="bed-label bottom" style="left: 25%">152</div>
-              <div class="bed-label bottom" style="left: 50%">305</div>
-              <div class="bed-label bottom" style="left: 75%">457</div>
-              <div class="bed-label bottom" style="left: 100%">610 mm</div>
-              <div class="bed-label left" style="bottom: 0%">0</div>
-              <div class="bed-label left" style="bottom: 25%">229</div>
-              <div class="bed-label left" style="bottom: 50%">457</div>
-              <div class="bed-label left" style="bottom: 75%">686</div>
-              <div class="bed-label left" style="bottom: 100%">914 mm</div>
-              <div class="target-marker" id="targetMarker"></div>
-              <div class="well-marker" id="wellMarker" title="Ink well keep-out zone"></div>
-              <div class="head-marker" id="headMarker">@</div>
+              <div class="plot-area" id="plotArea">
+                <div class="axis-x"></div>
+                <div class="axis-y"></div>
+                <div class="pcb-marker"></div>
+                <div class="calibration-marker" title="Calibration point: top-left, nearest PCB">C</div>
+                <div class="sheet-marker" id="sheetMarker"></div>
+                <div class="plot-preview" id="plotPreview"></div>
+                <div class="home-marker" id="homeMarker" title="User-defined home">+</div>
+                <div class="bed-label bottom" style="left: 0%">0</div>
+                <div class="bed-label bottom" style="left: 25%">152</div>
+                <div class="bed-label bottom" style="left: 50%">305</div>
+                <div class="bed-label bottom" style="left: 75%">457</div>
+                <div class="bed-label bottom" style="left: 100%">610 mm</div>
+                <div class="bed-label left" style="bottom: 0%">0</div>
+                <div class="bed-label left" style="bottom: 25%">229</div>
+                <div class="bed-label left" style="bottom: 50%">457</div>
+                <div class="bed-label left" style="bottom: 75%">686</div>
+                <div class="bed-label left" style="bottom: 100%">914 mm</div>
+                <div class="target-marker" id="targetMarker"></div>
+                <div class="well-marker" id="wellMarker" title="Ink well keep-out zone"></div>
+                <div class="head-marker" id="headMarker">@</div>
+              </div>
             </div>
           </div>
         </section>
@@ -2665,6 +2674,10 @@
       $("headMarker").addEventListener("pointercancel", (event) => finishDrag(event, false));
 
       window.addEventListener("keydown", (event) => {
+        const target = event.target;
+        const editing = target instanceof Element
+          && (target.matches("input, textarea, select") || target.isContentEditable);
+        if (editing || event.ctrlKey || event.metaKey || event.altKey) return;
         if (event.repeat && ["ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight"].includes(event.key)) event.preventDefault();
         if (event.key === "ArrowUp") { event.preventDefault(); setHeld(0, 1); }
         if (event.key === "ArrowDown") { event.preventDefault(); setHeld(0, -1); }
@@ -2678,7 +2691,10 @@
 
       window.addEventListener("keyup", (event) => {
         if (["ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight"].includes(event.key)) {
-          event.preventDefault();
+          const target = event.target;
+          const editing = target instanceof Element
+            && (target.matches("input, textarea, select") || target.isContentEditable);
+          if (!editing) event.preventDefault();
           setHeld(0, 0);
         }
         if (event.key === "Escape" && $("filesMenu")) {
