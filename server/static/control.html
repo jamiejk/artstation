@@ -2528,10 +2528,10 @@
         marker.style.display = "none";
         return null;
       }
-      const x = calibratedPaper ? Number(paper.top_right.x_mm) - Number(paper.width_mm) : Number(home.x_mm);
-      const y = calibratedPaper ? Number(paper.top_right.y_mm) : Number(home.y_mm);
       const width = calibratedPaper ? Number(paper.width_mm) : Number(footprint.width_mm);
       const height = calibratedPaper ? Number(paper.height_mm) : Number(footprint.height_mm);
+      const x = calibratedPaper ? Number(paper.top_right.x_mm) - width : Number(home.x_mm) - width;
+      const y = calibratedPaper ? Number(paper.top_right.y_mm) : Number(home.y_mm);
       if (![x, y, width, height].every(Number.isFinite) || width <= 0 || height <= 0) {
         marker.style.display = "none";
         return null;
@@ -2549,7 +2549,7 @@
       marker.title = [
         calibratedPaper
           ? `Paper from calibrated top-right corner`
-          : `Plot footprint from Home for ${job.id || "current job"}`,
+          : `Plot footprint left and down from Home for ${job.id || "current job"}`,
         `${width.toFixed(1)} × ${height.toFixed(1)} mm`,
         offBed ? "Warning: this footprint extends outside the calibrated bed." : "Within calibrated bed.",
       ].join("\n");
@@ -2575,7 +2575,7 @@
 
       const width = Number(footprint.width_mm);
       const height = Number(footprint.height_mm);
-      const x = origin ? Number(origin.x_mm) : Number(home.x_mm);
+      const x = origin ? Number(origin.x_mm) : Number(home.x_mm) - width;
       const y = origin ? Number(origin.y_mm) : Number(home.y_mm);
       if (![x, y, width, height].every(Number.isFinite) || width <= 0 || height <= 0) {
         marker.style.display = "none";
