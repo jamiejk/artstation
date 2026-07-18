@@ -1295,13 +1295,14 @@
                   <label for="plotFiles">SVG layers (ordered)</label>
                   <input id="plotFiles" type="file" accept=".svg,image/svg+xml" multiple required>
                 </div>
+                <div class="spec-note" id="fileSelectionStatus" role="status" aria-live="polite">No layers selected.</div>
                 <div class="form-row">
                   <label for="layerNames">Layer names, comma-separated</label>
                   <input id="layerNames" type="text" placeholder="Blue, Black">
                 </div>
                 <div class="spec-note">Automatic ink dipping uses the default in the Ink Well panel. Save or change it there before upload; externally submitted jobs inherit the same default unless their request explicitly sets auto_dip.</div>
                 <div class="toolbar" style="margin-top:10px">
-                  <button id="uploadSubmit" class="primary" type="submit">Prepare &amp; Queue</button>
+                  <button id="uploadSubmit" class="primary" type="submit" disabled>Load &amp; Queue</button>
                 </div>
               </form>
               <div class="job-groups">
@@ -2033,7 +2034,6 @@
       const estimateText = estimates.length
         ? ` Estimated dips: ${estimates.reduce((sum, item) => sum + Number(item.estimated_dip_count_per_layer || 0), 0)}; longest stroke ${Math.max(...estimates.map((item) => Number(item.longest_stroke_time_s || 0))).toFixed(1)}s.`
         : "";
-      setMessage(`Queued ${data.job_id}.${estimateText}`);
       const autoDipWasEnabled = $("autoDip").checked;
       const dipInterval = autoDipIntervalValue();
       $("uploadForm").reset();
@@ -2041,6 +2041,15 @@
       $("dipInterval").value = String(dipInterval);
       renderAutoDipStatus();
       await refresh();
+      return `Job ${data.job_id} loaded and queued.${estimateText} Press Play when the carriage, paper, and pen are ready.`;
+    }
+
+    function renderSelectedFiles() {
+      const files = Array.from($("plotFiles").files || []);
+      $("uploadSubmit").disabled = files.length === 0;
+      $("fileSelectionStatus").textContent = files.length
+        ? `${files.length} layer${files.length === 1 ? "" : "s"} selected: ${files.map((file) => file.name).join(", ")}`
+        : "No layers selected.";
     }
 
     async function deleteJob(jobId, button) {
@@ -2962,8 +2971,14 @@
       });
       $("uploadForm").addEventListener("submit", (event) => {
         withButtonFeedback("uploadSubmit", "Preparing plot…", () => uploadPlot(event))
+          .then((message) => {
+            renderSelectedFiles();
+            setMessage(message, { modal: true, durationMs: 5000 });
+          })
           .catch((error) => showError(error));
       });
+      $("plotFiles").addEventListener("change", renderSelectedFiles);
+      renderSelectedFiles();
       $("wellSetCentre").addEventListener("click", () => {
         withButtonFeedback("wellSetCentre", "Saving centre…", () => saveInkWell({ centre_from_current: true }))
           .then(() => setMessage("Ink well centre saved at the current plot-head position; test cycle required."))
