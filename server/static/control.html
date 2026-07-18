@@ -875,6 +875,15 @@
       cursor: not-allowed;
     }
 
+    .job-start {
+      width: 30px;
+      height: 30px;
+      min-height: 30px;
+      padding: 0 0 0 2px;
+      font-size: 14px;
+      line-height: 1;
+    }
+
     .job-card .job-layer,
     .job-card .job-meta,
     .job-card .job-timing {
@@ -2131,6 +2140,18 @@
       >&times;</button>`;
     }
 
+    function jobOperatorButton(job) {
+      const prompt = state.lastState && state.lastState.server && state.lastState.server.operator_prompt || {};
+      if (!prompt.active || String(prompt.job_id || "") !== String(job.id || "")) return "";
+      const action = prompt.action === "start" ? "Start" : "Continue";
+      return `<button
+        class="job-start primary"
+        data-operator-job-id="${escapeHtml(job.id || "")}"
+        title="${escapeHtml(`${action} job ${job.id}`)}"
+        aria-label="${escapeHtml(`${action} job ${job.id}`)}"
+      >&#9654;</button>`;
+    }
+
     function jobCard(job) {
       const status = job.status || "-";
       const layer = job.current_layer_name || `Layer ${job.current_layer || job.last_completed_layer || "-"}`;
@@ -2156,6 +2177,7 @@
           <div class="job-id mono">${escapeHtml(job.id || "-")}</div>
           <div class="toolbar">
             <div class="status-pill ${escapeHtml(status)}">${escapeHtml(status)}</div>
+            ${jobOperatorButton(job)}
             ${jobDeleteButton(job)}
           </div>
           <div class="job-layer">${escapeHtml(layer)}</div>
@@ -2555,6 +2577,7 @@
           api("/plotter/state"),
           api("/jobs"),
         ]);
+        state.lastState = plotterState;
         renderJobs(jobsState.jobs || plotterState.jobs || []);
         renderState(plotterState);
       } catch (error) {
@@ -2827,24 +2850,34 @@
           toggle.disabled = false;
         }
       });
+      function continueOperatorPrompt(button, expectedJobId = null) {
+        const prompt = state.lastState && state.lastState.server && state.lastState.server.operator_prompt || {};
+        if (!prompt.active || (expectedJobId && String(prompt.job_id || "") !== String(expectedJobId))) {
+          setMessage("That job is no longer waiting for operator confirmation.");
+          refresh();
+          return;
+        }
+        withButtonFeedback(button, prompt.action === "start" ? "Starting…" : "Continuing…", async () => {
+          if (prompt.action === "start") {
+            const enabled = autoDipRequestedForJob();
+            const interval = autoDipIntervalValue();
+            const plotResult = await post("/plotter/plot_settings", { auto_dip_enabled: enabled, dip_interval_s: interval });
+            if (state.config) {
+              state.config.auto_dip_enabled = plotResult.plot_settings.auto_dip_enabled;
+              state.config.dip_interval_s = plotResult.plot_settings.dip_interval_s;
+            }
+            return post("/operator/continue", { auto_dip_enabled: enabled, dip_interval_s: interval }, false);
+          }
+          return post("/operator/continue", {}, false);
+        })
+          .then(() => refresh())
+          .catch((error) => showError(error));
+      }
+
       $("operatorContinue").addEventListener("click", () => {
         const prompt = state.lastState && state.lastState.server && state.lastState.server.operator_prompt || {};
         if (prompt.active) {
-          withButtonFeedback("operatorContinue", prompt.action === "start" ? "Starting…" : "Continuing…", async () => {
-            if (prompt.action === "start") {
-              const enabled = autoDipRequestedForJob();
-              const interval = autoDipIntervalValue();
-              const plotResult = await post("/plotter/plot_settings", { auto_dip_enabled: enabled, dip_interval_s: interval });
-              if (state.config) {
-                state.config.auto_dip_enabled = plotResult.plot_settings.auto_dip_enabled;
-                state.config.dip_interval_s = plotResult.plot_settings.dip_interval_s;
-              }
-              return post("/operator/continue", { auto_dip_enabled: enabled, dip_interval_s: interval }, false);
-            }
-            return post("/operator/continue", {}, false);
-          })
-            .then(() => refresh())
-            .catch((error) => showError(error));
+          continueOperatorPrompt($("operatorContinue"));
           return;
         }
         if (state.pausedJob) {
@@ -2888,6 +2921,12 @@
         if (!button || button.disabled) return;
         event.preventDefault();
         deleteJob(button.dataset.deleteJobId, button);
+      });
+      document.addEventListener("click", (event) => {
+        const button = event.target.closest("[data-operator-job-id]");
+        if (!button || button.disabled) return;
+        event.preventDefault();
+        continueOperatorPrompt(button, button.dataset.operatorJobId);
       });
       $("uploadForm").addEventListener("submit", (event) => {
         withButtonFeedback("uploadSubmit", "Preparing plot…", () => uploadPlot(event))
