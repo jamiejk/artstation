@@ -886,7 +886,9 @@
 
     .job-card .job-layer,
     .job-card .job-meta,
-    .job-card .job-timing {
+    .job-card .job-timing,
+    .job-card .job-details,
+    .job-card .job-message {
       color: var(--muted);
       font-size: 12px;
       overflow-wrap: anywhere;
@@ -894,8 +896,41 @@
 
     .job-card .job-layer,
     .job-card .job-meta,
-    .job-card .job-timing {
+    .job-card .job-timing,
+    .job-card .job-details,
+    .job-card .job-message {
       grid-column: 1 / -1;
+    }
+
+    .job-card .job-layer {
+      color: var(--ink);
+      font-weight: 700;
+    }
+
+    .job-details {
+      display: grid;
+      grid-template-columns: 76px minmax(0, 1fr);
+      gap: 4px 10px;
+      margin: 2px 0 0;
+    }
+
+    .job-details dt {
+      color: var(--muted);
+      font-weight: 650;
+    }
+
+    .job-details dd {
+      min-width: 0;
+      margin: 0;
+      color: #344054;
+    }
+
+    .job-message {
+      margin-top: 2px;
+      padding: 6px 8px;
+      border-left: 3px solid var(--accent);
+      background: #f0fdfa;
+      color: #344054 !important;
     }
 
     .job-card .job-timing {
@@ -1201,6 +1236,7 @@
               <button id="wellDipNow">Dip Now</button>
             </div>
             <div class="spec-note" id="autoDipStatus">Auto Dip is off.</div>
+            <div class="spec-note">Load &amp; Queue uses these automatic ink-dipping settings. Save changes before upload; API jobs use the saved default unless they supply auto_dip.</div>
           </div>
           <div class="spec-note" id="wellStatus">Not configured.</div>
         </div>
@@ -1318,7 +1354,6 @@
                   <label for="layerNames">Layer names, comma-separated</label>
                   <input id="layerNames" type="text" placeholder="Blue, Black">
                 </div>
-                <div class="spec-note">Automatic ink dipping uses the default in the Ink Well panel. Save or change it there before upload; externally submitted jobs inherit the same default unless their request explicitly sets auto_dip.</div>
                 <div class="toolbar" style="margin-top:10px">
                   <button id="uploadSubmit" class="primary" type="submit" disabled>Load &amp; Queue</button>
                 </div>
@@ -2169,6 +2204,74 @@
       return `<div class="job-timing">Slowest timings: ${escapeHtml(items.join(" · "))}</div>`;
     }
 
+    function formatJobElapsed(seconds) {
+      const value = Number(seconds);
+      if (!Number.isFinite(value) || value < 0) return "-";
+      const wholeSeconds = Math.round(value);
+      const hours = Math.floor(wholeSeconds / 3600);
+      const minutes = Math.floor((wholeSeconds % 3600) / 60);
+      const remainder = wholeSeconds % 60;
+      if (hours) return `${hours}h ${String(minutes).padStart(2, "0")}m ${String(remainder).padStart(2, "0")}s`;
+      if (minutes) return `${minutes}m ${String(remainder).padStart(2, "0")}s`;
+      return `${remainder}s`;
+    }
+
+    function jobPlotTime(job) {
+      if (job.plot_segment_elapsed_s != null) {
+        return `Running ${formatJobElapsed(job.plot_segment_elapsed_s)}`;
+      }
+      if (job.last_plot_segment && job.last_plot_segment.elapsed_s != null) {
+        const mode = job.last_plot_segment.mode === "resume" ? "resume" : "plot";
+        return `${formatJobElapsed(job.last_plot_segment.elapsed_s)} (${mode} segment)`;
+      }
+      const totals = job.timing_summary && job.timing_summary.totals || {};
+      const plotMs = ["axicli_layer_plot", "axicli_layer_resume"].reduce((sum, key) => {
+        const elapsed = Number(totals[key] && totals[key].elapsed_ms);
+        return sum + (Number.isFinite(elapsed) ? elapsed : 0);
+      }, 0);
+      return plotMs > 0 ? formatJobElapsed(plotMs / 1000) : "Not started";
+    }
+
+    function jobDetailRows(job, { includeFinished = false } = {}) {
+      const footprint = plotFootprint(job);
+      const dimensions = footprint
+        ? `${Number(footprint.width_mm).toFixed(1)} × ${Number(footprint.height_mm).toFixed(1)} mm`
+        : "-";
+      const layerCount = Number(job.layer_count || 0);
+      const layerNumber = job.current_layer || job.last_completed_layer;
+      const layers = layerNumber
+        ? `${layerNumber} of ${layerCount || "?"}`
+        : `${layerCount || "-"} loaded`;
+      const speed = `down ${formatXySpeed(job.speed_pendown)} · up ${formatXySpeed(job.speed_penup)}`;
+      const pen = `down ${job.pen_pos_down != null ? job.pen_pos_down : "-"} · up ${job.pen_pos_up != null ? job.pen_pos_up : "-"} · raise ${job.pen_rate_raise != null ? job.pen_rate_raise : 75}%`;
+      const penTiming = `${job.pen_delay_down != null ? job.pen_delay_down : 0} ms down · ${job.pen_delay_up != null ? job.pen_delay_up : 0} ms up`;
+      const placement = job.plot_origin
+        ? job.plot_origin.paper_top_right
+          ? `Paper top-right ${Number(job.plot_origin.paper_top_right.x_mm).toFixed(1)}, ${Number(job.plot_origin.paper_top_right.y_mm).toFixed(1)} mm`
+          : `Origin ${Number(job.plot_origin.x_mm).toFixed(1)}, ${Number(job.plot_origin.y_mm).toFixed(1)} mm`
+        : "Home as top-right";
+      const autoDip = job.auto_dip_enabled
+        ? `Every ${Number(job.dip_interval_s).toFixed(1).replace(/\.0$/, "")}s pen-down · ${job.dip_count || 0} completed`
+        : "Off";
+      const rows = [
+        ["Plot size", dimensions],
+        ["Layers", layers],
+        ["Created", formatTime(job.created_at)],
+      ];
+      if (includeFinished && job.finished_at) rows.push(["Finished", formatTime(job.finished_at)]);
+      rows.push(
+        ["Plot time", jobPlotTime(job)],
+        ["XY speed", speed],
+        ["Pen", pen],
+        ["Pen timing", penTiming],
+        ["Placement", placement],
+        ["Auto dip", autoDip],
+      );
+      return `<dl class="job-details">${rows.map(([label, value]) => (
+        `<dt>${escapeHtml(label)}</dt><dd>${escapeHtml(value)}</dd>`
+      )).join("")}</dl>`;
+    }
+
     function jobDeleteBlocked(job) {
       return ["queued", "queued_for_operator", "waiting_for_operator", "queued_for_resume", "running", "dipping"].includes(job.status);
     }
@@ -2198,17 +2301,16 @@
 
     function jobCard(job) {
       const status = job.status || "-";
-      const layer = job.current_layer_name || `Layer ${job.current_layer || job.last_completed_layer || "-"}`;
-      const created = formatTime(job.created_at);
-      const speed = `XY down ${formatXySpeed(job.speed_pendown)} / up ${formatXySpeed(job.speed_penup)}`;
-      const pen = `pen down ${job.pen_pos_down != null ? job.pen_pos_down : "-"} / up ${job.pen_pos_up != null ? job.pen_pos_up : "-"} / delays ${job.pen_delay_down != null ? job.pen_delay_down : 0},${job.pen_delay_up != null ? job.pen_delay_up : 0} ms / raise ${job.pen_rate_raise != null ? job.pen_rate_raise : 75}%`;
-      const message = job.operator_message ? ` · ${job.operator_message}` : "";
-      const dip = job.auto_dip_enabled ? ` · auto dip ${job.dip_interval_s}s (${job.dip_count || 0} completed)` : "";
-      const origin = job.plot_origin
-        ? ` · origin ${Number(job.plot_origin.x_mm).toFixed(1)}, ${Number(job.plot_origin.y_mm).toFixed(1)} mm`
+      const previewLayers = job.plot_preview && Array.isArray(job.plot_preview.layers) ? job.plot_preview.layers : [];
+      const layer = job.current_layer_name
+        || (previewLayers.length === 1 ? previewLayers[0].name : "")
+        || (job.layer_count ? `${job.layer_count} layers loaded` : `Layer ${job.current_layer || job.last_completed_layer || "-"}`);
+      const originWarning = job.status === "paused" && !job.plot_origin
+        && state.paper && state.paper.enabled !== false && state.paper.top_right
+        ? `<div class="job-message">No paper-aligned origin; rerun recommended.</div>`
         : "";
-      const originWarning = job.status === "paused" && !job.plot_origin && state.paper && state.paper.top_right
-        ? " · no paper-aligned origin; rerun recommended"
+      const message = job.operator_message
+        ? `<div class="job-message">${escapeHtml(job.operator_message)}</div>`
         : "";
       const recovery = job.status === "dip_failed"
         ? `<div class="toolbar" style="margin-top:8px">
@@ -2228,13 +2330,14 @@
         <div class="job-card">
           <div class="job-id mono">${escapeHtml(job.id || "-")}</div>
           <div class="toolbar">
-            <div class="status-pill ${escapeHtml(status)}">${escapeHtml(status)}</div>
+            <div class="status-pill ${escapeHtml(status)}">${escapeHtml(status.replaceAll("_", " "))}</div>
             ${jobOperatorButton(job)}
             ${jobDeleteButton(job)}
           </div>
           <div class="job-layer">${escapeHtml(layer)}</div>
-          <div class="job-meta">Created ${escapeHtml(created)} · ${escapeHtml(job.layer_count || "-")} layer(s) · ${escapeHtml(speed)} · ${escapeHtml(pen)}${escapeHtml(dip)}${escapeHtml(origin)}${escapeHtml(originWarning)}${escapeHtml(message)}</div>
-          ${jobTimingLine(job)}
+          ${jobDetailRows(job)}
+          ${originWarning}
+          ${message}
           ${recovery}
           ${restart}
         </div>
@@ -2248,17 +2351,15 @@
     function recentJobCard(job) {
       const status = job.status || "-";
       const layer = job.current_layer_name || job.operator_message || `Layer ${job.current_layer || job.last_completed_layer || "-"}`;
-      const created = formatTime(job.created_at);
-      const finished = job.finished_at ? ` · finished ${formatTime(job.finished_at)}` : "";
       return `
         <div class="job-card">
           <div class="job-id mono">${escapeHtml(job.id || "-")}</div>
           <div class="toolbar">
-            <div class="status-pill ${escapeHtml(status)}">${escapeHtml(status)}</div>
+            <div class="status-pill ${escapeHtml(status)}">${escapeHtml(status.replaceAll("_", " "))}</div>
             ${jobDeleteButton(job)}
           </div>
           <div class="job-layer">${escapeHtml(layer)}</div>
-          <div class="job-meta">Created ${escapeHtml(created)}${escapeHtml(finished)} · ${escapeHtml(job.layer_count || "-")} layer(s)</div>
+          ${jobDetailRows(job, { includeFinished: true })}
         </div>
       `;
     }
