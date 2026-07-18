@@ -1754,7 +1754,7 @@
       $("wellStatus").classList.toggle("warn", staleCalibration);
       $("wellInstalled").textContent = well && well.installed ? "Disable Ink Well Check" : "Enable Ink Well Check";
       const marker = $("wellMarker");
-      if (centre && Number(well.radius_mm) > 0) {
+      if (well && well.installed && centre && Number(well.radius_mm) > 0) {
         const diameterX = (Number(well.radius_mm) * 2 / state.bed.width) * 100;
         const diameterY = (Number(well.radius_mm) * 2 / state.bed.height) * 100;
         marker.style.display = "block";
