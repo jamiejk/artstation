@@ -2058,6 +2058,24 @@
       }
     }
 
+    async function restartJob(jobId, button) {
+      if (!jobId) return;
+      const confirmed = window.confirm(
+        `Restart job ${jobId} from Layer 1?\n\n`
+        + "This creates a new queued copy using the current Paper and Speeds settings. "
+        + "Before pressing Play on the new job, return the carriage Home and check the pen and paper."
+      );
+      if (!confirmed) return;
+      await withButtonFeedback(button, "Restarting…", async () => {
+        const result = await post(`/jobs/${encodeURIComponent(jobId)}/rerun`);
+        setMessage(
+          `Restarted ${jobId} as ${result.job_id}. Return Home, check the setup, then press Play.`,
+          { modal: true }
+        );
+        await refresh();
+      });
+    }
+
     function statusClass(hardware) {
       if (!hardware || hardware.connected === false) return "bad";
       if (hardware.busy || hardware.button_pressed) return "warn";
@@ -2172,6 +2190,14 @@
              <button data-dip-action="skip" data-job-id="${escapeHtml(job.id)}">Skip Dip &amp; Resume</button>
            </div>`
         : "";
+      const restart = job.status === "paused"
+        ? `<div class="job-controls">
+             <div class="toolbar">
+               <button data-restart-job-id="${escapeHtml(job.id)}" title="Queue a new copy from Layer 1 using current settings">&#8635; Restart</button>
+             </div>
+             <div class="job-timing">Creates a new queued copy. Return Home before pressing Play.</div>
+           </div>`
+        : "";
       return `
         <div class="job-card">
           <div class="job-id mono">${escapeHtml(job.id || "-")}</div>
@@ -2184,6 +2210,7 @@
           <div class="job-meta">Created ${escapeHtml(created)} · ${escapeHtml(job.layer_count || "-")} layer(s) · ${escapeHtml(speed)} · ${escapeHtml(pen)}${escapeHtml(dip)}${escapeHtml(origin)}${escapeHtml(originWarning)}${escapeHtml(message)}</div>
           ${jobTimingLine(job)}
           ${recovery}
+          ${restart}
         </div>
       `;
     }
@@ -2927,6 +2954,12 @@
         if (!button || button.disabled) return;
         event.preventDefault();
         continueOperatorPrompt(button, button.dataset.operatorJobId);
+      });
+      document.addEventListener("click", (event) => {
+        const button = event.target.closest("[data-restart-job-id]");
+        if (!button || button.disabled) return;
+        event.preventDefault();
+        restartJob(button.dataset.restartJobId, button).catch((error) => showError(error));
       });
       $("uploadForm").addEventListener("submit", (event) => {
         withButtonFeedback("uploadSubmit", "Preparing plot…", () => uploadPlot(event))
