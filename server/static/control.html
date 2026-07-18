@@ -925,6 +925,22 @@
       max-width: 96px;
     }
 
+    .job-command-bar {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      margin-bottom: 14px;
+      padding-bottom: 12px;
+      border-bottom: 1px solid var(--line);
+    }
+
+    .job-command-bar button:disabled {
+      border-color: var(--line);
+      background: #f2f4f7;
+      color: #98a2b3;
+      opacity: 1;
+    }
+
     .status-pill {
       align-self: start;
       border-radius: 999px;
@@ -1029,8 +1045,6 @@
             <button id="penDown">Pen Down</button>
             <button id="setHome">Set Home</button>
             <button id="returnHome">Home</button>
-            <button id="operatorContinue" class="primary">Continue</button>
-            <button id="pauseActive" class="danger">Pause Job</button>
           </div>
           <div class="pen-grid">
             <div class="pen-control">
@@ -1290,6 +1304,10 @@
           <section>
             <div class="section-head">Jobs</div>
             <div class="section-body">
+              <div class="job-command-bar" aria-label="Job controls">
+                <button id="operatorContinue" class="primary" disabled>Continue</button>
+                <button id="pauseActive" class="danger" disabled>Pause Job</button>
+              </div>
               <form id="uploadForm" style="margin-bottom:14px">
                 <div class="form-row">
                   <label for="plotFiles">SVG layers (ordered)</label>
@@ -2318,6 +2336,15 @@
         : plotFootprint(job);
     }
 
+    function renderJobCommands() {
+      const prompt = state.lastState && state.lastState.server && state.lastState.server.operator_prompt || {};
+      const continueButton = $("operatorContinue");
+      const pauseButton = $("pauseActive");
+      continueButton.textContent = prompt.active && prompt.action === "start" ? "Start" : "Continue";
+      continueButton.disabled = !prompt.active && !state.pausedJob;
+      pauseButton.disabled = !state.activeJob;
+    }
+
     function renderJobs(jobs) {
       state.jobs = jobs || [];
       const activeJobs = state.jobs.filter((job) => ACTIVE_STATUSES.has(job.status));
@@ -2329,6 +2356,7 @@
       state.pausedJob = state.jobs
         .filter((job) => job.status === "paused")
         .sort((a, b) => Number(b.created_at || 0) - Number(a.created_at || 0))[0] || null;
+      renderJobCommands();
       renderAutoDipControls();
 
       const historyJobs = state.jobs.filter((job) => !ACTIVE_STATUSES.has(job.status) && !QUEUED_STATUSES.has(job.status));
@@ -2343,10 +2371,7 @@
       if (hasHardwareSnapshot(hardware)) state.lastHardware = hardware;
       const displayHardware = hasHardwareSnapshot(hardware) ? hardware : (state.lastHardware || hardware);
       const server = data.server || {};
-      const operatorPrompt = server.operator_prompt || {};
-      $("operatorContinue").textContent = operatorPrompt.active && operatorPrompt.action === "start"
-        ? "Start"
-        : "Continue";
+      renderJobCommands();
       const dotClass = statusClass(hardware);
       const connectionText = hardware.connected === false
         ? "Disconnected"
