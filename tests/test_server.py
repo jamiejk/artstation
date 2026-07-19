@@ -915,10 +915,44 @@ class InkDipGeometryTests(unittest.TestCase):
             strokes,
             speed_pendown=10,
             interval_s=0.75,
+            stroke_overhead_s=0.0,
         )
 
         self.assertEqual(estimate["checkpoint_after_strokes"], [2])
         self.assertEqual(estimate["estimated_dip_count_per_layer"], 2)
+
+    def test_auto_dip_schedule_caps_high_nominal_plot_speed(self):
+        strokes = [
+            [(float(index * 10), 0.0), (float((index + 1) * 10), 0.0)]
+            for index in range(10)
+        ]
+        estimate = ink_dip.estimate_checkpoint_schedule(
+            strokes,
+            speed_pendown=50,
+            interval_s=2.0,
+            max_effective_speed_mm_s=30.0,
+            stroke_overhead_s=0.0,
+        )
+
+        self.assertEqual(estimate["checkpoint_after_strokes"], [7])
+        self.assertEqual(estimate["estimated_speed_mm_s"], 30.0)
+        self.assertGreater(estimate["nominal_speed_mm_s"], estimate["estimated_speed_mm_s"])
+
+    def test_auto_dip_schedule_accounts_for_short_stroke_overhead(self):
+        strokes = [
+            [(float(index * 10), 0.0), (float((index + 1) * 10), 0.0)]
+            for index in range(10)
+        ]
+        estimate = ink_dip.estimate_checkpoint_schedule(
+            strokes,
+            speed_pendown=50,
+            interval_s=3.0,
+            max_effective_speed_mm_s=30.0,
+            stroke_overhead_s=0.5,
+        )
+
+        self.assertEqual(estimate["checkpoint_after_strokes"], [4, 8])
+        self.assertEqual(estimate["stroke_overhead_s"], 0.5)
 
     def test_does_not_schedule_redundant_dip_after_final_stroke(self):
         strokes = [[(0.0, 0.0), (100.0, 0.0)]]
@@ -926,6 +960,7 @@ class InkDipGeometryTests(unittest.TestCase):
             strokes,
             speed_pendown=10,
             interval_s=0.1,
+            stroke_overhead_s=0.0,
         )
 
         self.assertEqual(estimate["checkpoint_after_strokes"], [])

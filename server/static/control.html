@@ -1190,8 +1190,9 @@
               <span></span><input id="wellClearance" type="number" min="0" max="100" step="1" value="80"><span></span>
             </div>
             <div class="pen-control">
-              <label for="wellDip">Dip servo</label>
+              <label for="wellDip">Dip depth servo</label>
               <span></span><input id="wellDip" type="number" min="0" max="100" step="1" value="20"><span></span>
+              <div class="control-hint">Higher raises the pen; lower goes deeper into ink</div>
             </div>
             <div class="pen-control">
               <label for="wellDwell">Ink dwell (ms)</label>
@@ -1228,7 +1229,7 @@
                 Automatic ink dipping
               </label>
               <label class="mono" style="display:flex;align-items:center;gap:6px">
-                Dip interval
+                Pen-down travel before dip
                 <input id="dipInterval" type="number" min="0.1" max="86400" step="0.1" value="60">
                 s
               </label>
@@ -1447,6 +1448,7 @@
       positionCalibrationId: null,
       motorsEnabled: null,
       inkWell: null,
+      inkWellDirty: false,
       paper: null,
       motorSwitchPending: false,
       statusModalTimer: null,
@@ -1461,6 +1463,16 @@
     const ACTIVE_STATUSES = new Set(["running", "paused", "queued_for_resume", "dipping", "dip_failed"]);
     const QUEUED_STATUSES = new Set(["queued", "queued_for_operator", "waiting_for_operator"]);
     const HISTORY_STATUSES = new Set(["done", "cancelled", "interrupted", "failed"]);
+    const INK_WELL_INPUT_IDS = [
+      "wellRadius",
+      "wellClearance",
+      "wellDip",
+      "wellDwell",
+      "wellDipCircleCount",
+      "wellDipCircleDiameter",
+      "wellDripDwell",
+      "wellTravelSpeed",
+    ];
 
     function hideStatusModal() {
       if (state.statusModalTimer) {
@@ -1622,6 +1634,15 @@
       return new Date(Number(value) * 1000).toLocaleString();
     }
 
+    function formatDuration(seconds) {
+      const value = Number(seconds);
+      if (!Number.isFinite(value) || value < 0) return "-";
+      if (value < 60) return `${value.toFixed(1)}s`;
+      const minutes = Math.floor(value / 60);
+      const remainder = Math.floor(value % 60);
+      return `${minutes}m ${String(remainder).padStart(2, "0")}s`;
+    }
+
     function hasHardwareSnapshot(hardware) {
       return Boolean(hardware && hardware.connected === true && (hardware.position_estimate || hardware.steps || hardware.firmware));
     }
@@ -1758,7 +1779,7 @@
       const job = pausedAutoDipJob();
       const ready = inkWellReadyForAutoDip();
       let text = enabled && wellOn
-        ? `Auto Dip default on: new jobs will dip before plotting, then re-dip after about ${interval}s of pen-down plotting.`
+        ? `Auto Dip default on: new jobs will dip before plotting, then re-dip after about ${interval}s of pen-down XY travel.`
         : "Auto Dip default off: new jobs will not dip before or during plotting.";
       if (enabled && !wellOn) {
         text = "Auto Dip is checked, but Ink Well is OFF: new jobs will not dip before or during plotting.";
@@ -1766,7 +1787,7 @@
         text += " Ink well is not ready: run/confirm the test and mark it installed after setting the centre.";
       }
       if (job) {
-        text += ` Paused job ${job.id} is using ${Number(job.dip_interval_s || interval).toFixed(1).replace(/\.0$/, "")}s; Save updates that job and the default.`;
+        text += ` Paused job ${job.id} was prepared with ${Number(job.dip_interval_s || interval).toFixed(1).replace(/\.0$/, "")}s between dips; Save updates the displayed job value and default, but already prepared checkpoints stay as-is.`;
       } else {
         text += " Save updates the default for future jobs.";
       }
@@ -1776,8 +1797,10 @@
 
     function applyInkWell(well) {
       state.inkWell = well || {};
+      const activeElement = document.activeElement;
+      const editingInkWell = state.inkWellDirty || INK_WELL_INPUT_IDS.some((id) => $(id) === activeElement);
       const syncInput = (id, value) => {
-        if (value == null || document.activeElement === $(id)) return;
+        if (value == null || editingInkWell || document.activeElement === $(id)) return;
         $(id).value = String(value);
       };
       syncInput("wellRadius", well && well.radius_mm);
@@ -1802,12 +1825,17 @@
       const circleDiameter = well && well.dip_circle_diameter_mm != null ? well.dip_circle_diameter_mm : 0;
       const circleText = `${Number(circleCount)}×${Number(circleDiameter).toFixed(1)} mm circles`;
       const travelSpeed = well && well.travel_speed_mm_s != null ? Number(well.travel_speed_mm_s) : 120;
+      const dipDepth = well && well.dip_pos != null ? Number(well.dip_pos) : null;
+      const clearance = well && well.clearance_pos != null ? Number(well.clearance_pos) : null;
+      const servoText = dipDepth == null || clearance == null
+        ? "servo not set"
+        : `dip servo ${dipDepth.toFixed(0)}, clearance ${clearance.toFixed(0)}`;
       const staleNote = !well || well.installed || !inkWellStale(well)
         ? ""
         : " · saved centre stale; ignored while disabled";
       $("wellStatus").textContent = staleCalibration
         ? `Centre ${centreText} is stale after Home/current-position calibration changed. Re-position over the well and press Set Centre Here, or disable the ink-well check.`
-        : `Centre ${centreText} · travel ${travelSpeed.toFixed(0)} mm/s · pickup ${circleText} · test ${well && well.test_passed ? "passed" : "required"} · ink-well check ${well && well.installed ? "enabled" : "disabled"}${staleNote}`;
+        : `Centre ${centreText} · ${servoText} · travel ${travelSpeed.toFixed(0)} mm/s · pickup ${circleText} · test ${well && well.test_passed ? "passed" : "required"} · ink-well check ${well && well.installed ? "enabled" : "disabled"}${staleNote}`;
       $("wellStatus").classList.toggle("warn", staleCalibration);
       $("wellInstalled").textContent = well && well.installed ? "Disable Ink Well Check" : "Enable Ink Well Check";
       const marker = $("wellMarker");
@@ -1826,6 +1854,7 @@
 
     async function saveInkWell(extra = {}) {
       const result = await post("/plotter/ink_well", Object.assign(inkWellPayload(), extra));
+      state.inkWellDirty = false;
       applyInkWell(result.ink_well);
       if (state.config) state.config.ink_well = result.ink_well;
       return result;
@@ -2204,6 +2233,40 @@
       return `<div class="job-timing">Slowest timings: ${escapeHtml(items.join(" · "))}</div>`;
     }
 
+    function jobPlotSegmentLine(job) {
+      if (job.plot_segment_elapsed_s != null) {
+        const mode = job.plot_segment_mode === "resume" ? "Resume segment" : "Plot segment";
+        const layer = job.plot_segment_layer != null ? ` layer ${job.plot_segment_layer}` : "";
+        const target = job.plot_segment_dip_interval_s != null
+          ? ` · dip target ${Number(job.plot_segment_dip_interval_s).toFixed(1).replace(/\.0$/, "")}s`
+          : "";
+        return `<div class="job-timing">${escapeHtml(mode + layer)} running ${escapeHtml(formatDuration(job.plot_segment_elapsed_s))}${escapeHtml(target)}</div>`;
+      }
+      const last = job.last_plot_segment || null;
+      if (!last || last.elapsed_s == null) return "";
+      const lastMode = last.mode === "resume" ? "Last resume segment" : "Last plot segment";
+      const lastLayer = last.layer != null ? ` layer ${last.layer}` : "";
+      return `<div class="job-timing">${escapeHtml(lastMode + lastLayer)} ran ${escapeHtml(formatDuration(last.elapsed_s))}</div>`;
+    }
+
+    function jobAutoDipScheduleLine(job) {
+      const schedule = job.auto_dip_schedule || null;
+      if (!schedule || schedule.checkpoint_count == null) return "";
+      const first = schedule.first_checkpoint_after_stroke != null
+        ? ` · first after stroke ${schedule.first_checkpoint_after_stroke}`
+        : "";
+      const speed = schedule.estimated_speed_mm_s != null
+        ? ` · est ${Number(schedule.estimated_speed_mm_s).toFixed(1)} mm/s`
+        : "";
+      const overhead = schedule.stroke_overhead_s != null
+        ? ` + ${Number(schedule.stroke_overhead_s).toFixed(1)}s/stroke`
+        : "";
+      const target = job.dip_interval_s != null
+        ? ` · interval ${Number(job.dip_interval_s).toFixed(1).replace(/\.0$/, "")}s`
+        : "";
+      return `<div class="job-timing">Auto-dip schedule: ${escapeHtml(schedule.checkpoint_count)} checkpoints${escapeHtml(first)}${escapeHtml(speed)}${escapeHtml(overhead)}${escapeHtml(target)}</div>`;
+    }
+
     function formatJobElapsed(seconds) {
       const value = Number(seconds);
       if (!Number.isFinite(value) || value < 0) return "-";
@@ -2355,7 +2418,7 @@
         <div class="job-card">
           <div class="job-id mono">${escapeHtml(job.id || "-")}</div>
           <div class="toolbar">
-            <div class="status-pill ${escapeHtml(status)}">${escapeHtml(status.replaceAll("_", " "))}</div>
+            <div class="status-pill ${escapeHtml(status)}">${escapeHtml(status)}</div>
             ${jobDeleteButton(job)}
           </div>
           <div class="job-layer">${escapeHtml(layer)}</div>
@@ -2372,9 +2435,7 @@
       dipNow.disabled = !job;
       dipNow.dataset.jobId = job ? job.id : "";
       if (document.activeElement !== intervalInput) {
-        if (job && job.dip_interval_s != null) {
-          intervalInput.value = String(job.dip_interval_s);
-        } else if (state.config && state.config.dip_interval_s != null) {
+        if (state.config && state.config.dip_interval_s != null) {
           intervalInput.value = String(state.config.dip_interval_s);
         }
       }
@@ -3104,6 +3165,13 @@
       });
       $("plotFiles").addEventListener("change", renderSelectedFiles);
       renderSelectedFiles();
+      INK_WELL_INPUT_IDS.forEach((id) => {
+        const input = $(id);
+        if (!input) return;
+        input.addEventListener("input", () => {
+          state.inkWellDirty = true;
+        });
+      });
       $("wellSetCentre").addEventListener("click", () => {
         withButtonFeedback("wellSetCentre", "Saving centre…", () => saveInkWell({ centre_from_current: true }))
           .then(() => setMessage("Ink well centre saved at the current plot-head position; test cycle required."))
@@ -3159,7 +3227,7 @@
             const plotText = plotResult.plot_settings.auto_dip_enabled ? "enabled" : "disabled";
             const interval = Number(plotResult.plot_settings.dip_interval_s || 60);
             const jobText = jobResult && jobResult.message ? ` ${jobResult.message}` : "";
-            setMessage(`Auto-dip default ${plotText}; interval ${interval}s.${jobText}`);
+            setMessage(`Auto-dip default ${plotText}; pen-down travel before dip ${interval}s.${jobText}`);
             refresh();
           })
           .catch((error) => showError(error));

@@ -101,9 +101,9 @@ def validate_dip_interval(value: float) -> float:
     try:
         value = float(value)
     except (TypeError, ValueError) as exc:
-        raise HTTPException(status_code=400, detail="dip_interval_s must be a number") from exc
+        raise HTTPException(status_code=400, detail="Pen-down travel before dip must be a number of seconds") from exc
     if not math.isfinite(value) or not 0.1 <= value <= 86400:
-        raise HTTPException(status_code=400, detail="dip_interval_s must be between 0.1 and 86400")
+        raise HTTPException(status_code=400, detail="Pen-down travel before dip must be between 0.1 and 86400 seconds")
     return round(value, 3)
 
 

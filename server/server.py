@@ -15,6 +15,7 @@ import secrets
 import json
 import math
 import serial
+import traceback
 
 try:
     from server import hardware
@@ -23,6 +24,7 @@ try:
     from server import plot_execution
     from server import positioning
     from server import state_store
+    from server import settings_store
     from server import settings as settings_utils
     from server import svg_utils
     from server import timing_log
@@ -34,6 +36,7 @@ except ImportError:
     import plot_execution
     import positioning
     import state_store
+    import settings_store
     import settings as settings_utils
     import svg_utils
     import timing_log
@@ -351,26 +354,30 @@ def current_position_calibration_id() -> str:
 
 
 def load_pen_settings() -> None:
-    with pen_settings_lock:
-        pen_settings["pen_pos_up"] = DEFAULT_PEN_POS_UP
-        pen_settings["pen_pos_down"] = DEFAULT_PEN_POS_DOWN
-        try:
-            data = state_store.read_json(PEN_SETTINGS_PATH)
-            if data is None:
-                return
-            pen_settings["pen_pos_up"] = int(data.get("pen_pos_up", pen_settings["pen_pos_up"]))
-            pen_settings["pen_pos_down"] = int(data.get("pen_pos_down", pen_settings["pen_pos_down"]))
-        except Exception as exc:
-            print(f"Could not load {PEN_SETTINGS_PATH}: {exc}", flush=True)
+    def normalize(defaults: dict, data: dict) -> dict:
+        return {
+            "pen_pos_up": int(data.get("pen_pos_up", defaults["pen_pos_up"])),
+            "pen_pos_down": int(data.get("pen_pos_down", defaults["pen_pos_down"])),
+        }
+
+    settings_store.load_settings(
+        path=PEN_SETTINGS_PATH,
+        target=pen_settings,
+        lock=pen_settings_lock,
+        defaults={
+            "pen_pos_up": DEFAULT_PEN_POS_UP,
+            "pen_pos_down": DEFAULT_PEN_POS_DOWN,
+        },
+        normalize=normalize,
+    )
 
 
 def save_pen_settings_unlocked() -> None:
-    state_store.write_json(PEN_SETTINGS_PATH, pen_settings)
+    settings_store.save_settings_unlocked(PEN_SETTINGS_PATH, pen_settings)
 
 
 def current_pen_settings() -> dict:
-    with pen_settings_lock:
-        return dict(pen_settings)
+    return settings_store.current_settings(pen_settings, pen_settings_lock)
 
 
 def apply_pen_settings_to_job(job: dict, settings: dict) -> None:
@@ -379,46 +386,40 @@ def apply_pen_settings_to_job(job: dict, settings: dict) -> None:
 
 
 def load_plot_settings() -> None:
-    with plot_settings_lock:
-        plot_settings["speed_pendown"] = DEFAULT_SPEED_PENDOWN
-        plot_settings["speed_penup"] = DEFAULT_SPEED_PENUP
-        plot_settings["pen_delay_down"] = DEFAULT_PEN_DELAY_DOWN
-        plot_settings["pen_delay_up"] = DEFAULT_PEN_DELAY_UP
-        plot_settings["pen_rate_raise"] = DEFAULT_PEN_RATE_RAISE
-        plot_settings["auto_dip_enabled"] = False
-        plot_settings["dip_interval_s"] = 60.0
-        try:
-            data = state_store.read_json(PLOT_SETTINGS_PATH)
-            if data is None:
-                return
-            plot_settings["speed_pendown"] = int(data.get("speed_pendown", plot_settings["speed_pendown"]))
-            plot_settings["speed_penup"] = int(data.get("speed_penup", plot_settings["speed_penup"]))
-            plot_settings["pen_delay_down"] = validate_pen_delay_down(
-                data.get("pen_delay_down", plot_settings["pen_delay_down"])
-            )
-            plot_settings["pen_delay_up"] = validate_pen_delay_up(
-                data.get("pen_delay_up", plot_settings["pen_delay_up"])
-            )
-            plot_settings["pen_rate_raise"] = validate_pen_rate_raise(
-                data.get("pen_rate_raise", plot_settings["pen_rate_raise"])
-            )
-            plot_settings["auto_dip_enabled"] = resolve_auto_dip_flag(
-                data.get("auto_dip_enabled", plot_settings["auto_dip_enabled"])
-            )
-            plot_settings["dip_interval_s"] = validate_dip_interval(
-                data.get("dip_interval_s", plot_settings["dip_interval_s"])
-            )
-        except Exception as exc:
-            print(f"Could not load {PLOT_SETTINGS_PATH}: {exc}", flush=True)
+    def normalize(defaults: dict, data: dict) -> dict:
+        return {
+            "speed_pendown": int(data.get("speed_pendown", defaults["speed_pendown"])),
+            "speed_penup": int(data.get("speed_penup", defaults["speed_penup"])),
+            "pen_delay_down": validate_pen_delay_down(data.get("pen_delay_down", defaults["pen_delay_down"])),
+            "pen_delay_up": validate_pen_delay_up(data.get("pen_delay_up", defaults["pen_delay_up"])),
+            "pen_rate_raise": validate_pen_rate_raise(data.get("pen_rate_raise", defaults["pen_rate_raise"])),
+            "auto_dip_enabled": resolve_auto_dip_flag(data.get("auto_dip_enabled", defaults["auto_dip_enabled"])),
+            "dip_interval_s": validate_dip_interval(data.get("dip_interval_s", defaults["dip_interval_s"])),
+        }
+
+    settings_store.load_settings(
+        path=PLOT_SETTINGS_PATH,
+        target=plot_settings,
+        lock=plot_settings_lock,
+        defaults={
+            "speed_pendown": DEFAULT_SPEED_PENDOWN,
+            "speed_penup": DEFAULT_SPEED_PENUP,
+            "pen_delay_down": DEFAULT_PEN_DELAY_DOWN,
+            "pen_delay_up": DEFAULT_PEN_DELAY_UP,
+            "pen_rate_raise": DEFAULT_PEN_RATE_RAISE,
+            "auto_dip_enabled": False,
+            "dip_interval_s": 60.0,
+        },
+        normalize=normalize,
+    )
 
 
 def save_plot_settings_unlocked() -> None:
-    state_store.write_json(PLOT_SETTINGS_PATH, plot_settings)
+    settings_store.save_settings_unlocked(PLOT_SETTINGS_PATH, plot_settings)
 
 
 def current_plot_settings() -> dict:
-    with plot_settings_lock:
-        return dict(plot_settings)
+    return settings_store.current_settings(plot_settings, plot_settings_lock)
 
 
 def apply_plot_settings_to_job(job: dict, settings: dict) -> None:
@@ -445,8 +446,8 @@ def validate_paper_settings(settings: dict) -> dict:
 
 
 def load_paper_settings() -> None:
-    with paper_settings_lock:
-        defaults = validate_paper_settings(
+    def defaults() -> dict:
+        return validate_paper_settings(
             {
                 "state_version": 1,
                 "enabled": True,
@@ -455,71 +456,71 @@ def load_paper_settings() -> None:
                 "top_right": None,
             }
         )
-        paper_settings.clear()
-        paper_settings.update(defaults)
-        try:
-            data = state_store.read_json(PAPER_SETTINGS_PATH)
-            if data is None:
-                return
-            if data.get("state_version") != 1:
-                raise ValueError("unsupported state version")
-            candidate = dict(defaults)
-            candidate.update(data)
-            paper_settings.update(validate_paper_settings(candidate))
-        except Exception as exc:
-            print(f"Could not load {PAPER_SETTINGS_PATH}: {exc}", flush=True)
+
+    def normalize(defaults: dict, data: dict) -> dict:
+        if data.get("state_version") != 1:
+            raise ValueError("unsupported state version")
+        candidate = dict(defaults)
+        candidate.update(data)
+        return validate_paper_settings(candidate)
+
+    settings_store.load_settings(
+        path=PAPER_SETTINGS_PATH,
+        target=paper_settings,
+        lock=paper_settings_lock,
+        defaults=defaults,
+        normalize=normalize,
+    )
 
 
 def save_paper_settings_unlocked() -> None:
-    state_store.write_json(PAPER_SETTINGS_PATH, paper_settings)
+    settings_store.save_settings_unlocked(PAPER_SETTINGS_PATH, paper_settings)
 
 
 def current_paper_settings() -> dict:
-    with paper_settings_lock:
-        return state_store.deep_copy_jsonable(paper_settings)
+    return settings_store.current_settings(paper_settings, paper_settings_lock, deep=True)
 
 
 def load_ink_well_settings() -> None:
-    with ink_well_settings_lock:
-        defaults = {
-            "state_version": 1,
-            "installed": False,
-            "centre": None,
-            "radius_mm": None,
-            "clearance_pos": None,
-            "dip_pos": None,
-            "dwell_ms": 1000,
-            "drip_dwell_ms": 0,
-            "travel_speed_mm_s": DEFAULT_INK_WELL_TRAVEL_SPEED_MM_S,
-            "dip_circle_count": 3,
-            "dip_circle_diameter_mm": 10.0,
-            "calibration_id": None,
-            "test_passed": False,
-            "tested_at": None,
-        }
-        ink_well_settings.clear()
-        ink_well_settings.update(defaults)
-        try:
-            data = state_store.read_json(INK_WELL_SETTINGS_PATH)
-            if data is None:
-                return
-            if data.get("state_version") != 1:
-                raise ValueError("unsupported state version")
-            candidate = dict(defaults)
-            candidate.update(data)
-            validate_ink_well_settings(candidate, require_ready=bool(candidate.get("installed")))
-            ink_well_settings.update(candidate)
-        except Exception as exc:
-            print(f"Could not load {INK_WELL_SETTINGS_PATH}: {exc}", flush=True)
+    defaults = {
+        "state_version": 1,
+        "installed": False,
+        "centre": None,
+        "radius_mm": None,
+        "clearance_pos": None,
+        "dip_pos": None,
+        "dwell_ms": 1000,
+        "drip_dwell_ms": 0,
+        "travel_speed_mm_s": DEFAULT_INK_WELL_TRAVEL_SPEED_MM_S,
+        "dip_circle_count": 3,
+        "dip_circle_diameter_mm": 10.0,
+        "calibration_id": None,
+        "test_passed": False,
+        "tested_at": None,
+    }
+
+    def normalize(defaults: dict, data: dict) -> dict:
+        if data.get("state_version") != 1:
+            raise ValueError("unsupported state version")
+        candidate = dict(defaults)
+        candidate.update(data)
+        return validate_ink_well_settings(candidate, require_ready=bool(candidate.get("installed")))
+
+    settings_store.load_settings(
+        path=INK_WELL_SETTINGS_PATH,
+        target=ink_well_settings,
+        lock=ink_well_settings_lock,
+        defaults=defaults,
+        normalize=normalize,
+    )
 
 
 def save_ink_well_settings_unlocked() -> None:
-    state_store.write_json(INK_WELL_SETTINGS_PATH, ink_well_settings)
+    settings_store.save_settings_unlocked(INK_WELL_SETTINGS_PATH, ink_well_settings)
 
 
 def current_ink_well_settings() -> dict:
-    with ink_well_settings_lock:
-        return state_store.deep_copy_jsonable(ink_well_settings)
+    return settings_store.current_settings(ink_well_settings, ink_well_settings_lock, deep=True)
 
 
 def validate_ink_well_settings(settings: dict, *, require_ready: bool = False) -> dict:
@@ -774,7 +775,6 @@ def load_jobs() -> None:
                     "queued_for_resume",
                     "running",
                     "dipping",
-                    "dip_failed",
                 }:
                     job["status"] = "interrupted"
                     job["operator_message"] = (
@@ -909,6 +909,24 @@ def job_plot_start_position(job: dict) -> dict:
 
 def layer_dip_estimates(layers: list[dict]) -> list[dict]:
     return job_model.layer_dip_estimates(layers)
+
+
+def job_auto_dip_schedule_summary(job: dict) -> dict | None:
+    layer = next((item for item in job.get("layers") or [] if item.get("ink_analysis")), None)
+    if not layer:
+        return None
+    schedule = (layer.get("ink_analysis") or {}).get("dip_schedule")
+    if not isinstance(schedule, dict):
+        return None
+    checkpoints = schedule.get("checkpoint_after_strokes") or []
+    return {
+        "checkpoint_count": len(checkpoints),
+        "first_checkpoint_after_stroke": checkpoints[0] if checkpoints else None,
+        "estimated_speed_mm_s": schedule.get("estimated_speed_mm_s"),
+        "nominal_speed_mm_s": schedule.get("nominal_speed_mm_s"),
+        "max_effective_speed_mm_s": schedule.get("max_effective_speed_mm_s"),
+        "stroke_overhead_s": schedule.get("stroke_overhead_s"),
+    }
 
 
 def plot_origin_for_layer_metrics(svg_metrics: dict, paper: dict | None = None) -> dict | None:
@@ -1136,7 +1154,10 @@ def configure_job_auto_dip(job: dict, *, enabled: bool, dip_interval_s: float | 
     job["dip_interval_s"] = interval_s
     job["dip_count"] = 0
     job["dip_failure"] = None
-    job["operator_message"] = f"Automatic ink dipping enabled before plot start; interval {interval_s:g}s."
+    job["operator_message"] = (
+        "Automatic ink dipping enabled before plot start; "
+        f"dip after about {interval_s:g}s of pen-down XY travel."
+    )
 
 
 def run_control_command(cmd: list[str]) -> dict:
@@ -1284,6 +1305,29 @@ def require_enabled_high_resolution_motors(port: serial.Serial) -> None:
         )
 
 
+def ensure_enabled_high_resolution_motors_for_job(port: serial.Serial, log=None) -> None:
+    resolution = read_motor_resolution(port)
+    with motor_resolution_cache_lock:
+        motor_resolution_cache["value"] = resolution
+        motor_resolution_cache["checked_at"] = time.monotonic()
+    if resolution == (1, 1):
+        return
+
+    if log:
+        log.write(f"Motors were not enabled in high-resolution mode ({resolution}); enabling for job recovery.\n")
+        log.flush()
+    response = raw_command(port, "EM,1,1\r")
+    if not response.startswith("OK"):
+        raise RuntimeError(f"Could not enable motors for job recovery: {response!r}")
+
+    resolution = read_motor_resolution(port)
+    with motor_resolution_cache_lock:
+        motor_resolution_cache["value"] = resolution
+        motor_resolution_cache["checked_at"] = time.monotonic()
+    if resolution != (1, 1):
+        raise RuntimeError(f"Motors did not enter high-resolution mode: {resolution}")
+
+
 def require_cached_high_resolution_motors(port: serial.Serial) -> None:
     with motor_resolution_cache_lock:
         cached_value = motor_resolution_cache["value"]
@@ -1429,9 +1473,12 @@ def _move_to_bed_target_locked(target: dict, *, speed_mm_s: float, log) -> dict:
         return _move_to_bed_target_on_port_locked(port, target, speed_mm_s=speed_mm_s, log=log)
 
 
-def current_hardware_bed_position_locked() -> dict:
+def current_hardware_bed_position_locked(*, allow_job_motor_enable: bool = False, log=None) -> dict:
     with serial.Serial(PLOTTER_PORT, timeout=2) as port:
-        require_enabled_high_resolution_motors(port)
+        if allow_job_motor_enable:
+            ensure_enabled_high_resolution_motors_for_job(port, log=log)
+        else:
+            require_enabled_high_resolution_motors(port)
         _axis_1, _axis_2, raw_current = read_step_position(port)
     current = current_position_estimate(raw_current)
     if current is None:
@@ -1593,7 +1640,7 @@ def execute_dip_cycle(job: dict, log, *, return_position: dict | None = None) ->
     with hardware_lock:
         with serial.Serial(PLOTTER_PORT, timeout=2) as port:
             phase_start = timing_log.monotonic()
-            require_enabled_high_resolution_motors(port)
+            ensure_enabled_high_resolution_motors_for_job(port, log=log)
             _run_dip_servo_on_port_locked(port, job, raised=True, log=log)
             timing_log.write_timing(log, "dip_clearance_raise", phase_start, job_id=job.get("id"))
             update_job(job["id"], dip_return_position=dict(return_position))
@@ -1665,8 +1712,10 @@ def return_from_failed_dip_without_loading_ink(job: dict, log, return_position: 
             SAFE_MANUAL_MAX_XY_SPEED_MM_S,
             float(well.get("travel_speed_mm_s", DEFAULT_INK_WELL_TRAVEL_SPEED_MM_S)),
         )
-        _run_dip_servo_locked(job, raised=True, log=log)
-        actual = _move_to_bed_target_locked(return_position, speed_mm_s=speed_mm_s, log=log)
+        with serial.Serial(PLOTTER_PORT, timeout=2) as port:
+            ensure_enabled_high_resolution_motors_for_job(port, log=log)
+            _run_dip_servo_on_port_locked(port, job, raised=True, log=log)
+            actual = _move_to_bed_target_on_port_locked(port, return_position, speed_mm_s=speed_mm_s, log=log)
     error_mm = math.hypot(
         actual["x_mm"] - return_position["x_mm"],
         actual["y_mm"] - return_position["y_mm"],
@@ -1963,15 +2012,43 @@ def run_layer(job: dict, layer: dict, log) -> str:
       "paused"
       "failed"
     """
-    return plot_execution.run_layer(
-        job,
-        layer,
-        log,
-        axicli=AXICLI,
-        axicli_config=AXICLI_CONFIG,
-        plotter_port=PLOTTER_PORT,
-        run_axicli_command=run_axicli_command,
+    segment_started_at = now()
+    update_job(
+        job["id"],
+        plot_segment_started_at=segment_started_at,
+        plot_segment_mode="plot",
+        plot_segment_layer=layer.get("index"),
+        plot_segment_layer_name=layer.get("name"),
+        plot_segment_dip_interval_s=job.get("dip_interval_s"),
     )
+    try:
+        return plot_execution.run_layer(
+            job,
+            layer,
+            log,
+            axicli=AXICLI,
+            axicli_config=AXICLI_CONFIG,
+            plotter_port=PLOTTER_PORT,
+            run_axicli_command=run_axicli_command,
+        )
+    finally:
+        finished_at = now()
+        update_job(
+            job["id"],
+            plot_segment_started_at=None,
+            plot_segment_mode=None,
+            plot_segment_layer=None,
+            plot_segment_layer_name=None,
+            plot_segment_dip_interval_s=None,
+            last_plot_segment={
+                "mode": "plot",
+                "layer": layer.get("index"),
+                "layer_name": layer.get("name"),
+                "started_at": segment_started_at,
+                "finished_at": finished_at,
+                "elapsed_s": round(finished_at - segment_started_at, 3),
+            },
+        )
 
 
 def resume_progress_output_path(progress_svg: Path) -> Path:
@@ -1991,15 +2068,43 @@ def resume_layer(job: dict, layer: dict, log) -> str:
       "paused"
       "failed"
     """
-    return plot_execution.resume_layer(
-        job,
-        layer,
-        log,
-        axicli=AXICLI,
-        axicli_config=AXICLI_CONFIG,
-        plotter_port=PLOTTER_PORT,
-        run_axicli_command=run_axicli_command,
+    segment_started_at = now()
+    update_job(
+        job["id"],
+        plot_segment_started_at=segment_started_at,
+        plot_segment_mode="resume",
+        plot_segment_layer=layer.get("index"),
+        plot_segment_layer_name=layer.get("name"),
+        plot_segment_dip_interval_s=job.get("dip_interval_s"),
     )
+    try:
+        return plot_execution.resume_layer(
+            job,
+            layer,
+            log,
+            axicli=AXICLI,
+            axicli_config=AXICLI_CONFIG,
+            plotter_port=PLOTTER_PORT,
+            run_axicli_command=run_axicli_command,
+        )
+    finally:
+        finished_at = now()
+        update_job(
+            job["id"],
+            plot_segment_started_at=None,
+            plot_segment_mode=None,
+            plot_segment_layer=None,
+            plot_segment_layer_name=None,
+            plot_segment_dip_interval_s=None,
+            last_plot_segment={
+                "mode": "resume",
+                "layer": layer.get("index"),
+                "layer_name": layer.get("name"),
+                "started_at": segment_started_at,
+                "finished_at": finished_at,
+                "elapsed_s": round(finished_at - segment_started_at, 3),
+            },
+        )
 
 
 def prime_pen_down_after_manual_dip(job: dict, log) -> dict | None:
@@ -2041,6 +2146,7 @@ def run_layer_with_auto_dips(
 
     def perform_dip(phase: str) -> bool:
         dip_start = timing_log.monotonic()
+        return_position = None
         update_job(
             job["id"],
             status="dipping",
@@ -2051,7 +2157,12 @@ def run_layer_with_auto_dips(
             if phase == "initial" and not resume:
                 return_position = job_plot_start_position(job)
             else:
-                return_position = current_hardware_bed_position_locked()
+                return_position = current_hardware_bed_position_locked(allow_job_motor_enable=True, log=log)
+            log.write(
+                f"Auto-dip {phase} return checkpoint: "
+                f"({return_position['x_mm']:.3f}, {return_position['y_mm']:.3f})\n"
+            )
+            log.flush()
             update_job(job["id"], dip_return_position=dict(return_position))
             result = execute_dip_cycle(job, log, return_position=return_position)
             update_job(
@@ -2071,6 +2182,10 @@ def run_layer_with_auto_dips(
             )
             return True
         except Exception as exc:
+            failure_return_position = dict(return_position) if isinstance(return_position, dict) else None
+            log.write(f"Automatic dip {phase} failed: {exc!r}\n")
+            log.write(traceback.format_exc())
+            log.flush()
             attempt_dip_clearance_raise(job, log)
             update_job(
                 job["id"],
@@ -2079,7 +2194,7 @@ def run_layer_with_auto_dips(
                     "error": repr(exc),
                     "layer": layer["index"],
                     "phase": phase,
-                    "return_position": jobs.get(job["id"], {}).get("dip_return_position"),
+                    "return_position": failure_return_position,
                     "created_at": now(),
                 },
                 operator_message=(
@@ -2367,7 +2482,6 @@ if os.environ.get("PLOTTER_DISABLE_WORKER") != "1":
     threading.Thread(target=worker, daemon=True).start()
 
 
-@app.get("/health")
 def health(x_plotter_token: Optional[str] = Header(default=None)):
     check_token(x_plotter_token)
 
@@ -2384,12 +2498,10 @@ def health(x_plotter_token: Optional[str] = Header(default=None)):
     }
 
 
-@app.get("/control")
 def control_page():
     return FileResponse(STATIC_DIR / "control.html")
 
 
-@app.get("/control/config")
 def control_config(request: Request):
     require_localhost(request)
     pen_defaults = current_pen_settings()
@@ -2527,7 +2639,6 @@ def _build_job_record(
     return job
 
 
-@app.post("/plot/layers")
 async def plot_layers(
     files: List[UploadFile] = File(...),
     layer_names: Optional[str] = Form(None),
@@ -2608,7 +2719,10 @@ async def plot_layers(
                 detail="Complete the ink well test and mark it installed before enabling automatic dipping",
             )
         if dip_interval_s is None:
-            raise HTTPException(status_code=400, detail="dip_interval_s is required when auto_dip is enabled")
+            raise HTTPException(
+                status_code=400,
+                detail="Pen-down travel before dip is required when auto_dip is enabled",
+            )
         dip_interval_s = validate_dip_interval(dip_interval_s)
     if well_settings.get("installed"):
         try:
@@ -2705,7 +2819,6 @@ async def plot_layers(
     return response_payload
 
 
-@app.get("/jobs")
 def list_jobs(
     x_plotter_token: Optional[str] = Header(default=None),
 ):
@@ -2716,6 +2829,10 @@ def list_jobs(
 
         for job_id, job in jobs.items():
             status = job.get("status")
+            plot_segment_started_at = job.get("plot_segment_started_at")
+            plot_segment_elapsed_s = None
+            if plot_segment_started_at is not None:
+                plot_segment_elapsed_s = max(0.0, now() - float(plot_segment_started_at))
             summaries.append(
                 {
                     "id": job_id,
@@ -2735,7 +2852,15 @@ def list_jobs(
                     "pen_pos_down": job.get("pen_pos_down"),
                     "pen_pos_up": job.get("pen_pos_up"),
                     "operator_message": job.get("operator_message"),
+                    "plot_segment_started_at": plot_segment_started_at,
+                    "plot_segment_elapsed_s": round(plot_segment_elapsed_s, 3) if plot_segment_elapsed_s is not None else None,
+                    "plot_segment_mode": job.get("plot_segment_mode"),
+                    "plot_segment_layer": job.get("plot_segment_layer"),
+                    "plot_segment_layer_name": job.get("plot_segment_layer_name"),
+                    "plot_segment_dip_interval_s": job.get("plot_segment_dip_interval_s"),
+                    "last_plot_segment": job.get("last_plot_segment"),
                     "auto_dip_enabled": job.get("auto_dip_enabled", False),
+                    "auto_dip_schedule": job_auto_dip_schedule_summary(job),
                     "dip_interval_s": job.get("dip_interval_s"),
                     "dip_count": job.get("dip_count", 0),
                     "dip_failure": job.get("dip_failure"),
@@ -2754,7 +2879,6 @@ def list_jobs(
     return {"jobs": summaries}
 
 
-@app.get("/jobs/{job_id}")
 def get_job(
     job_id: str,
     x_plotter_token: Optional[str] = Header(default=None),
@@ -2770,7 +2894,6 @@ def get_job(
     return job
 
 
-@app.get("/jobs/{job_id}/layers/{layer_index}/preview.svg")
 def job_layer_preview(
     request: Request,
     job_id: str,
@@ -2797,7 +2920,6 @@ def job_layer_preview(
     )
 
 
-@app.post("/jobs/{job_id}/cancel")
 def cancel_job(
     job_id: str,
     x_plotter_token: Optional[str] = Header(default=None),
@@ -2821,7 +2943,6 @@ def cancel_job(
     return {"job_id": job_id, "status": "cancelled"}
 
 
-@app.get("/jobs/{job_id}/log")
 def get_job_log(
     job_id: str,
     x_plotter_token: Optional[str] = Header(default=None),
@@ -2843,7 +2964,6 @@ def get_job_log(
     }
 
 
-@app.post("/jobs/{job_id}/pause")
 def pause_job(
     job_id: str,
     x_plotter_token: Optional[str] = Header(default=None),
@@ -2867,7 +2987,6 @@ def pause_job(
     return {"ok": True, "job_id": job_id, "message": "Pause signal sent to AxiCLI"}
 
 
-@app.post("/jobs/{job_id}/resume")
 def resume_job(
     job_id: str,
     x_plotter_token: Optional[str] = Header(default=None),
@@ -2908,7 +3027,6 @@ def resume_job(
     }
 
 
-@app.post("/jobs/{job_id}/dip_recovery")
 def recover_dip_job(
     job_id: str,
     payload: dict = Body(...),
@@ -2927,7 +3045,7 @@ def recover_dip_job(
         if job.get("status") != "dip_failed":
             raise HTTPException(status_code=400, detail=f"Job is not dip_failed: {job.get('status')!r}")
         failure = job.get("dip_failure") or {}
-        if not isinstance(failure.get("return_position"), dict):
+        if not isinstance(failure.get("return_position") or job.get("dip_return_position"), dict):
             raise HTTPException(
                 status_code=409,
                 detail="No verified return position is available; cancel and rerun after recalibration",
@@ -2946,7 +3064,6 @@ def recover_dip_job(
     }
 
 
-@app.post("/jobs/{job_id}/dip_now")
 def dip_paused_job_now(
     job_id: str,
     x_plotter_token: Optional[str] = Header(default=None),
@@ -2968,7 +3085,7 @@ def dip_paused_job_now(
         with log_path.open("a", encoding="utf-8", errors="replace") as log:
             log.write(f"\nManual Dip Now requested at {now():.3f}\n")
             log.flush()
-            return_position = current_hardware_bed_position_locked()
+            return_position = current_hardware_bed_position_locked(allow_job_motor_enable=True, log=log)
             update_job(
                 job_id,
                 status="dipping",
@@ -3014,7 +3131,6 @@ def dip_paused_job_now(
     }
 
 
-@app.post("/jobs/{job_id}/dip_interval")
 def update_job_dip_interval(
     job_id: str,
     payload: dict = Body(...),
@@ -3030,10 +3146,13 @@ def update_job_dip_interval(
         if not job.get("auto_dip_enabled"):
             raise HTTPException(status_code=400, detail="Job does not have automatic dipping configured")
         if job.get("status") not in {"paused", "queued", "queued_for_operator", "waiting_for_operator"}:
-            raise HTTPException(status_code=400, detail=f"Job interval cannot be changed while status is {job.get('status')!r}")
+            raise HTTPException(
+                status_code=400,
+                detail=f"Pen-down travel before dip cannot be changed while status is {job.get('status')!r}",
+            )
         job["dip_interval_s"] = interval_s
         job["operator_message"] = (
-            f"Dip interval set to {interval_s:g}s. Existing prepared checkpoints are unchanged; "
+            f"Pen-down travel before dip set to {interval_s:g}s. Existing prepared checkpoints are unchanged; "
             "use Dip Now for this paused plot or rerun for a regenerated schedule."
         )
         save_job_unlocked(job_id)
@@ -3046,7 +3165,6 @@ def update_job_dip_interval(
     }
 
 
-@app.post("/jobs/{job_id}/auto_dip")
 def update_job_auto_dip(
     job_id: str,
     payload: dict = Body(default={}),
@@ -3075,7 +3193,6 @@ def update_job_auto_dip(
         }
 
 
-@app.post("/jobs/clear")
 def clear_jobs(
     payload: dict = Body(default={}),
     x_plotter_token: Optional[str] = Header(default=None),
@@ -3111,7 +3228,6 @@ def clear_jobs(
     return {"removed": removed, "skipped": skipped, "keep_files": keep_files}
 
 
-@app.post("/jobs/{job_id}/delete")
 def delete_job(
     job_id: str,
     payload: dict = Body(default={}),
@@ -3126,7 +3242,6 @@ def delete_job(
     return {"removed": removed, "keep_files": keep_files}
 
 
-@app.post("/jobs/{job_id}/rerun")
 def rerun_job(
     job_id: str,
     x_plotter_token: Optional[str] = Header(default=None),
@@ -3251,7 +3366,6 @@ def rerun_job(
     }
 
 
-@app.get("/plotter/state")
 def plotter_state(
     x_plotter_token: Optional[str] = Header(default=None),
 ):
@@ -3283,7 +3397,6 @@ def plotter_state(
     }
 
 
-@app.post("/plotter/pen")
 def plotter_pen(
     request: Request,
     payload: dict = Body(...),
@@ -3338,7 +3451,6 @@ def plotter_pen(
     return result
 
 
-@app.post("/plotter/pen_settings")
 def plotter_pen_settings(
     request: Request,
     payload: dict = Body(...),
@@ -3357,7 +3469,6 @@ def plotter_pen_settings(
         return {"ok": True, "pen_settings": dict(pen_settings)}
 
 
-@app.post("/plotter/plot_settings")
 def plotter_plot_settings(
     request: Request,
     payload: dict = Body(...),
@@ -3385,7 +3496,6 @@ def plotter_plot_settings(
         return {"ok": True, "plot_settings": dict(plot_settings)}
 
 
-@app.get("/plotter/paper")
 def plotter_paper(
     request: Request,
     x_plotter_token: Optional[str] = Header(default=None),
@@ -3395,7 +3505,6 @@ def plotter_paper(
     return {"paper": current_paper_settings(), "paper_sizes": PAPER_SIZES_MM}
 
 
-@app.post("/plotter/paper")
 def plotter_paper_update(
     request: Request,
     payload: dict = Body(...),
@@ -3427,7 +3536,6 @@ def plotter_paper_update(
         return {"ok": True, "paper": current_paper_settings(), "paper_sizes": PAPER_SIZES_MM}
 
 
-@app.get("/plotter/ink_well")
 def plotter_ink_well(
     request: Request,
     x_plotter_token: Optional[str] = Header(default=None),
@@ -3437,7 +3545,6 @@ def plotter_ink_well(
     return {"ink_well": current_ink_well_settings()}
 
 
-@app.post("/plotter/ink_well")
 def plotter_ink_well_update(
     request: Request,
     payload: dict = Body(...),
@@ -3512,7 +3619,6 @@ def plotter_ink_well_update(
         }
 
 
-@app.post("/plotter/ink_well/test")
 def plotter_ink_well_test(
     request: Request,
     x_plotter_token: Optional[str] = Header(default=None),
@@ -3575,7 +3681,6 @@ def plotter_ink_well_test(
     }
 
 
-@app.post("/plotter/ink_well/confirm_test")
 def plotter_ink_well_confirm_test(
     request: Request,
     x_plotter_token: Optional[str] = Header(default=None),
@@ -3606,7 +3711,6 @@ def plotter_ink_well_confirm_test(
     }
 
 
-@app.post("/plotter/motors")
 def plotter_motors(
     request: Request,
     payload: dict = Body(...),
@@ -3654,7 +3758,6 @@ def plotter_motors(
     return result
 
 
-@app.post("/plotter/home/set")
 def plotter_set_home(
     request: Request,
     x_plotter_token: Optional[str] = Header(default=None),
@@ -3694,7 +3797,6 @@ def plotter_set_home(
     }
 
 
-@app.post("/plotter/position/set")
 def plotter_set_position(
     request: Request,
     payload: dict = Body(...),
@@ -3765,7 +3867,6 @@ def plotter_set_position(
     }
 
 
-@app.post("/plotter/position/calibration")
 def plotter_position_calibration_toggle(
     request: Request,
     payload: dict = Body(...),
@@ -3794,7 +3895,6 @@ def plotter_position_calibration_toggle(
         }
 
 
-@app.post("/plotter/home/return")
 def plotter_return_home(
     request: Request,
     x_plotter_token: Optional[str] = Header(default=None),
@@ -3805,7 +3905,6 @@ def plotter_return_home(
     return checked_return_home()
 
 
-@app.post("/plotter/move")
 def plotter_move(
     request: Request,
     payload: dict = Body(...),
@@ -3896,7 +3995,6 @@ def plotter_move(
     }
 
 
-@app.post("/plotter/jog")
 def plotter_jog(
     request: Request,
     payload: dict = Body(...),
@@ -3969,7 +4067,6 @@ def plotter_jog(
     }
 
 
-@app.post("/plotter/move_to")
 def plotter_move_to(
     request: Request,
     payload: dict = Body(...),
@@ -4054,7 +4151,6 @@ def plotter_move_to(
     }
 
 
-@app.get("/operator/next")
 def operator_next(request: Request):
     require_localhost(request)
 
@@ -4062,7 +4158,6 @@ def operator_next(request: Request):
         return dict(operator_prompt)
 
 
-@app.post("/operator/continue")
 def operator_continue(request: Request, payload: dict = Body(default={})):
     require_localhost(request)
 
@@ -4092,3 +4187,23 @@ def operator_continue(request: Request, payload: dict = Body(default={})):
     operator_event.set()
 
     return {"ok": True, "message": "Continuing.", "operator_prompt": prompt}
+
+
+try:
+    from server.routes_core import router as core_router
+    from server.routes_jobs import router as jobs_router
+    from server.routes_operator import router as operator_router
+    from server.routes_plot import router as plot_router
+    from server.routes_plotter import router as plotter_router
+except ImportError:
+    from routes_core import router as core_router
+    from routes_jobs import router as jobs_router
+    from routes_operator import router as operator_router
+    from routes_plot import router as plot_router
+    from routes_plotter import router as plotter_router
+
+app.include_router(core_router)
+app.include_router(plot_router)
+app.include_router(jobs_router)
+app.include_router(plotter_router)
+app.include_router(operator_router)

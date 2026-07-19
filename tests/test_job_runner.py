@@ -21,8 +21,12 @@ def make_context(jobs):
     ctx.return_home = mock.Mock(return_value=0)
     ctx.wait_for_operator = mock.Mock(return_value=True)
     ctx.announce_on_linux_box = mock.Mock()
-    ctx.execute_dip_cycle = mock.Mock(return_value={"return_error_mm": 0})
-    ctx.return_from_failed_dip_without_loading_ink = mock.Mock(return_value={"return_error_mm": 0})
+    recovery_result = {
+        "actual_position": {"x_mm": 1.0, "y_mm": 2.0},
+        "return_error_mm": 0,
+    }
+    ctx.execute_dip_cycle = mock.Mock(return_value=recovery_result)
+    ctx.return_from_failed_dip_without_loading_ink = mock.Mock(return_value=recovery_result)
     ctx.attempt_dip_clearance_raise = mock.Mock()
     ctx.updates = updates
     return ctx

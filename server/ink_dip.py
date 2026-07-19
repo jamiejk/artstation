@@ -3,11 +3,18 @@ from __future__ import annotations
 from pathlib import Path
 import copy
 import math
+import os
 import xml.etree.ElementTree as ET
 
 
 INCH_TO_MM = 25.4
 AXIDRAW_MAX_SPEED_IN_S = 8.6979
+DEFAULT_AUTO_DIP_MAX_EFFECTIVE_SPEED_MM_S = float(
+    os.environ.get("PLOTTER_AUTO_DIP_MAX_EFFECTIVE_SPEED_MM_S", "30")
+)
+DEFAULT_AUTO_DIP_STROKE_OVERHEAD_S = float(
+    os.environ.get("PLOTTER_AUTO_DIP_STROKE_OVERHEAD_S", "0.5")
+)
 INKSCAPE_NAMESPACE = "http://www.inkscape.org/namespaces/inkscape"
 
 
@@ -36,15 +43,22 @@ def estimate_checkpoint_schedule(
     *,
     speed_pendown: int,
     interval_s: float,
+    max_effective_speed_mm_s: float = DEFAULT_AUTO_DIP_MAX_EFFECTIVE_SPEED_MM_S,
+    stroke_overhead_s: float = DEFAULT_AUTO_DIP_STROKE_OVERHEAD_S,
 ) -> dict:
     if not 1 <= int(speed_pendown) <= 100:
         raise ValueError("speed_pendown must be between 1 and 100")
     if not math.isfinite(interval_s) or interval_s <= 0:
         raise ValueError("interval_s must be positive")
 
-    speed_mm_s = int(speed_pendown) * AXIDRAW_MAX_SPEED_IN_S * INCH_TO_MM / 110.0
+    nominal_speed_mm_s = int(speed_pendown) * AXIDRAW_MAX_SPEED_IN_S * INCH_TO_MM / 110.0
+    if not math.isfinite(max_effective_speed_mm_s) or max_effective_speed_mm_s <= 0:
+        raise ValueError("max_effective_speed_mm_s must be positive")
+    if not math.isfinite(stroke_overhead_s) or stroke_overhead_s < 0:
+        raise ValueError("stroke_overhead_s must be non-negative")
+    speed_mm_s = min(nominal_speed_mm_s, max_effective_speed_mm_s)
     stroke_lengths = [polyline_length(points) for points in polylines]
-    stroke_times = [length / speed_mm_s for length in stroke_lengths]
+    stroke_times = [(length / speed_mm_s) + stroke_overhead_s for length in stroke_lengths]
 
     checkpoints: list[int] = []
     elapsed_since_dip = 0.0
@@ -62,6 +76,9 @@ def estimate_checkpoint_schedule(
         "longest_stroke_time_s": round(max(stroke_times, default=0.0), 3),
         "longest_stroke_length_mm": round(max(stroke_lengths, default=0.0), 3),
         "estimated_speed_mm_s": round(speed_mm_s, 3),
+        "nominal_speed_mm_s": round(nominal_speed_mm_s, 3),
+        "max_effective_speed_mm_s": round(max_effective_speed_mm_s, 3),
+        "stroke_overhead_s": round(stroke_overhead_s, 3),
         "interval_s": round(interval_s, 3),
     }
 

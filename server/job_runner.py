@@ -182,9 +182,16 @@ def recover_dip_failed_job(ctx, job_id: str, *, retry_dip: bool) -> None:
 
     try:
         with log_path.open("a", encoding="utf-8", errors="replace") as log:
-            return_position = failure.get("return_position")
+            return_position = failure.get("return_position") or job.get("dip_return_position")
             if not isinstance(return_position, dict):
                 raise RuntimeError("Dip recovery has no verified checkpoint return position")
+
+            log.write(
+                "\nDip recovery requested: "
+                f"{'retry' if retry_dip else 'skip'}; "
+                f"checkpoint=({float(return_position['x_mm']):.3f}, {float(return_position['y_mm']):.3f})\n"
+            )
+            log.flush()
 
             ctx.update_job(
                 job_id,
@@ -200,7 +207,14 @@ def recover_dip_failed_job(ctx, job_id: str, *, retry_dip: bool) -> None:
                     job,
                     log,
                     return_position,
-                )
+            )
+            log.write(
+                "Dip recovery completed: "
+                f"actual=({float(recovery_result['actual_position']['x_mm']):.3f}, "
+                f"{float(recovery_result['actual_position']['y_mm']):.3f}) "
+                f"return_error_mm={float(recovery_result['return_error_mm']):.4f}\n"
+            )
+            log.flush()
             ctx.update_job(
                 job_id,
                 last_dip=recovery_result,
