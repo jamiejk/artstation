@@ -171,6 +171,23 @@ def layer_plot_cmd(
             str(job.get("pen_rate_raise", 75)),
         ]
     )
+    soft_out_mm = float(job.get("soft_out_mm", 0) or 0)
+    if soft_out_mm > 0:
+        cmd.extend(["--soft_out_mm", f"{soft_out_mm:g}"])
+    gradual_ramp_mm = float(job.get("gradual_ramp_mm", 0) or 0)
+    if gradual_ramp_mm > 0:
+        cmd.extend(
+            [
+                "--gradual_ramp_mm",
+                f"{gradual_ramp_mm:g}",
+                "--gradual_exit_ramp_mm",
+                f"{float(job.get('gradual_exit_ramp_mm', gradual_ramp_mm) or 0):g}",
+                "--gradual_tail_mm",
+                f"{float(job.get('gradual_tail_mm', 0) or 0):g}",
+                "--gradual_segment_mm",
+                f"{float(job.get('gradual_segment_mm', 0) or 0):g}",
+            ]
+        )
     return cmd
 
 

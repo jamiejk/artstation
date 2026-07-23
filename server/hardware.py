@@ -210,7 +210,16 @@ def run_pen_servo_on_port(
     ebb_command(port, f"SC,5,{down_pwm}\r")
     ebb_command(port, f"SC,11,{up_rate}\r")
     ebb_command(port, f"SC,12,{down_rate}\r")
+    # Standard AxiDraw RC servo: 8 channels × 3 ms. Never set SC,9 to 0 — that is the
+    # S2 channel duration (valid 1–6 ms); 0 breaks PWM timing and leaves only a twitch.
     ebb_command(port, "SC,8,8\r")
+    ebb_command(port, "SC,9,3\r")
+    # Ensure servo rail is powered (EBB v2.5+); 0 timeout = never auto-off via SR.
+    try:
+        ebb_command(port, "SR,60000,1\r")
+    except RuntimeError:
+        # Older firmware / hardware without servo power switch still moves the pen.
+        pass
     ebb_command(port, f"SP,{pen_state},{delay_ms},{config['servo_pin']}\r")
     return {
         "ok": True,
@@ -219,6 +228,63 @@ def run_pen_servo_on_port(
         "delay_ms": delay_ms,
         "up_pwm": up_pwm,
         "down_pwm": down_pwm,
+    }
+
+
+def run_pen_to_height_on_port(
+    port: serial.Serial,
+    *,
+    axicli_config: Path,
+    height: float,
+    from_height: float | None = None,
+    rate_percent: int = 100,
+    extra_settle_ms: int = 20,
+    label: str | None = None,
+    log=None,
+) -> dict:
+    """Drive the pen servo to an absolute height on the 0–100 software map.
+
+    0 = servo_min (deepest in the map), 100 = servo_max (highest). This is an
+    absolute PWM target, not a relative delta from the physical pose.
+    """
+    height = max(0.0, min(100.0, float(height)))
+    config = current_axidraw_servo_config(axicli_config)
+    pwm = servo_pwm_for_pen_position(config, height)
+    rate = servo_rate_value(config, rate_percent)
+    travel_from = float(from_height) if from_height is not None else height
+    delay_ms = servo_travel_delay_ms(
+        config,
+        travel_from,
+        height,
+        rate_percent,
+        extra_settle_ms=extra_settle_ms,
+    )
+    # Floor small moves so the queue still powers/servos briefly.
+    delay_ms = max(40, delay_ms)
+    if log is not None:
+        log.write(
+            (label or f"Pen height {height:g}")
+            + f": absolute map height, pwm={pwm}, delay={delay_ms} ms\n"
+        )
+        log.flush()
+    # Both up/down targets set to the same PWM so SP,0 reaches that height.
+    ebb_command(port, f"SC,4,{pwm}\r")
+    ebb_command(port, f"SC,5,{pwm}\r")
+    ebb_command(port, f"SC,11,{rate}\r")
+    ebb_command(port, f"SC,12,{rate}\r")
+    ebb_command(port, "SC,8,8\r")
+    ebb_command(port, "SC,9,3\r")
+    try:
+        ebb_command(port, "SR,60000,1\r")
+    except RuntimeError:
+        pass
+    ebb_command(port, f"SP,0,{delay_ms},{config['servo_pin']}\r")
+    return {
+        "ok": True,
+        "method": "direct_ebb_absolute",
+        "height": height,
+        "pwm": pwm,
+        "delay_ms": delay_ms,
     }
 
 

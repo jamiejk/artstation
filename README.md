@@ -7,7 +7,7 @@ A local server and browser-based control panel for operating a UUNA TEK ArtStati
 - Send SVG plot jobs to the ArtStation from any authenticated device on your local network.
 - Manage the queue and job history from the web interface, including pausing, resuming, rerunning, and cancelling jobs.
 - View the plot head on a bed map, move it to precise coordinates, and set or return to a custom home position from the browser.
-- Tune manual travel speed, pen-up and pen-down plotting speeds, servo positions, pen timing, and pen-raise rate.
+- Tune manual travel speed, pen-up and pen-down plotting speeds, servo positions, pause-clearance height, pen timing, and pen-raise rate.
 - Submit ordered, multi-layer jobs. The server pauses before the first layer and between layers so the operator can fit or change pens.
 - Persist queued jobs, job history, plot settings, pen settings, and position estimates across server restarts.
 - Validate SVG dimensions and reject movements outside the configured plotter bed.
@@ -63,12 +63,17 @@ curl -H "X-Plotter-Token: $PLOTTER_TOKEN" \
   -F "files=@layer-1.svg" \
   -F "files=@layer-2.svg" \
   -F "layer_names=Blue,Black" \
+  -F "rotation_degrees=90" \
   http://127.0.0.1:8765/plot/layers
 ```
 
-The worker waits for local operator confirmation before the first layer and between layers. Uploaded SVG dimensions must fit within `MAX_PLOTTER_WIDTH_MM` and `MAX_PLOTTER_HEIGHT_MM`.
+The worker waits for local operator confirmation before the first layer and between layers. Use `rotation_degrees=0`, `90`, `180`, or `270` to rotate every layer clockwise before preview, paper-fit, and safety analysis. Uploaded SVG dimensions must fit within `MAX_PLOTTER_WIDTH_MM` and `MAX_PLOTTER_HEIGHT_MM` after rotation.
 
-Several setup panels have ON/OFF switches. OFF keeps the saved values but stops that module affecting new work: Paper OFF ignores saved paper size/top-right for previews and job alignment, and Ink Well OFF ignores the saved keep-out zone. Plot Bed Calibration OFF also keeps the saved calibration, but the browser asks for confirmation because absolute moves, Home, paper, and ink-well setup may be unsafe when calibration is not trusted.
+When a running plot is paused, AxiDraw first stops safely and writes its resumable progress SVG. After AxiDraw releases the serial port, the server raises the pen to the saved **Pause clearance** servo position (100 by default). Continuing the job leaves the pen raised during resume travel; AxiDraw lowers it only when the next stroke begins. The clearance can also be defaulted with `PLOTTER_PAUSE_CLEARANCE_POS`.
+
+Several setup panels have ON/OFF switches. OFF keeps the saved values but stops that module affecting new work: Paper OFF ignores saved paper size/top-right for previews and job alignment, and Ink Well OFF ignores the saved keep-out zone. Plot Bed Calibration OFF switches the arrow controls to unrestricted local relative movement: **Set Home** makes the current physical point local `(0,0)`, while absolute bed dragging is disabled. Recalibrate before relying on bed, paper, or ink-well coordinates again.
+
+The browser explains position-trust changes in status modals. Switching the motors off clears the `@` cursor and Home because the carriage can then move independently of the controller; switching them back on does not recreate those coordinates. While AxiCLI plots, the cursor is hidden, then restored from the controller step counters when plotting releases the serial port. If that reconciliation fails, or the server restarts during motion, the saved position is invalidated and **Set Bed Top Left** is required. SVG previews still render without calibration as an explicitly labelled **Unanchored preview** for shape inspection only.
 
 The **Clear stopped jobs** button removes completed, failed, cancelled, interrupted, paused, and dip-failed jobs from the server view permanently. By default it preserves job artifacts and logs on disk but deletes each cleared job's `job.json` metadata record, so cleared jobs do not reappear after a refresh or service restart.
 
@@ -95,6 +100,32 @@ Calibration establishes the bed coordinate system at the top-left point and init
 The project uses `axicli` for full SVG plotting and a narrow direct EBB serial control layer for latency-sensitive operator actions. Direct serial is used for short actions such as jogging, pen up/down, browser Home return, and ink-well dip cycles. Full layer plotting remains on `axicli` so SVG parsing, path planning, acceleration behavior, and AxiDraw compatibility stay with the upstream driver.
 
 See [`docs/axicli-vs-direct-ebb.md`](docs/axicli-vs-direct-ebb.md) for the boundary, tradeoffs, and runtime-state policy.
+
+### Vendored AxiDraw pen-profile fork
+
+Normal jobs still use the installed, unmodified `axicli`. A job selects the
+vendored AxiDraw 3.9.6 fork only when it snapshots an experimental soft lift or
+a gradual pen profile. The built-in **Staedtler Marsmatic** profile lowers the
+pen over the first 4.375 mm of each stroke and raises it over the final
+4.6875 mm, followed by a 0.4375 mm fully raised tail. **Standard** leaves this
+behavior disabled.
+
+The fork is intentionally narrow: it splits upstream-planned XY motion and
+interleaves servo targets while preserving total XY steps, duration, endpoint,
+clipping, progress SVG, pause, and resume behavior. It is loaded through
+[`scripts/axicli-softout`](scripts/axicli-softout); it does not replace the
+virtual environment's `axicli` package.
+
+See [`vendor/axidraw-softout/README.md`](vendor/axidraw-softout/README.md) for
+upstream provenance, local modifications, runtime selection, safety invariants,
+tests, and the update procedure. See
+[`docs/z-ramp-stroke-experiment.md`](docs/z-ramp-stroke-experiment.md) for the
+physical experiments and selected Marsmatic values.
+
+## Changes in the July 2026 operator update
+
+The complete change inventory since commit `9a2b72c` is recorded in
+[`docs/changes-2026-07-23.md`](docs/changes-2026-07-23.md).
 
 ## Testing
 

@@ -31,5 +31,12 @@ plotter_paper_settings.json
 
 # Manual plot artifacts; keep the scripts and documentation
 manual_tests/**/*.svg
+!manual_tests/axidraw_softout_baseline.svg
+!manual_tests/axidraw_softout_2mm.svg
+!manual_tests/axidraw_softout_sweep_1mm.svg
+!manual_tests/axidraw_softout_sweep_2mm.svg
+!manual_tests/axidraw_softout_sweep_3mm.svg
+!manual_tests/axidraw_softout_proof_stock.svg
+!manual_tests/axidraw_softout_proof_20mm.svg
 manual_tests/**/*.plot.log
 manual_tests/**/pressure_*.log
