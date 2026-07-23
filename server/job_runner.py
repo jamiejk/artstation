@@ -34,15 +34,7 @@ def continue_job_after_layer(ctx, job_id: str, start_layer_number: int, log) -> 
             stop_current_job = True
             break
         if result == "paused":
-            ctx.update_job(
-                job_id,
-                status="paused",
-                paused_layer=layer_number,
-                log_tail=ctx.log_tail(Path(job["log_path"])),
-            )
-            ctx.announce_on_linux_box(
-                f"Job {job_id} paused during Layer {layer_number}. Resume handling is needed before continuing."
-            )
+            ctx.finalize_paused_job(job_id, layer_number, log)
             stop_current_job = True
             break
 
@@ -123,12 +115,7 @@ def resume_paused_job(ctx, job_id: str) -> None:
                 return
 
             if result == "paused":
-                ctx.update_job(
-                    job_id,
-                    status="paused",
-                    paused_layer=paused_layer_number,
-                    log_tail=ctx.log_tail(log_path),
-                )
+                ctx.finalize_paused_job(job_id, paused_layer_number, log)
                 return
 
             if result != "done":
@@ -234,7 +221,7 @@ def recover_dip_failed_job(ctx, job_id: str, *, retry_dip: bool) -> None:
             )
             if result in {"dip_failed", "paused"}:
                 if result == "paused":
-                    ctx.update_job(job_id, status="paused", paused_layer=layer_number)
+                    ctx.finalize_paused_job(job_id, layer_number, log)
                 return
             if result != "done":
                 ctx.update_job(

@@ -28,6 +28,7 @@ def make_context(jobs):
     ctx.execute_dip_cycle = mock.Mock(return_value=recovery_result)
     ctx.return_from_failed_dip_without_loading_ink = mock.Mock(return_value=recovery_result)
     ctx.attempt_dip_clearance_raise = mock.Mock()
+    ctx.finalize_paused_job = mock.Mock()
     ctx.updates = updates
     return ctx
 
@@ -73,6 +74,48 @@ class JobRunnerTests(unittest.TestCase):
         self.assertEqual(jobs["job"]["status"], "failed")
         self.assertEqual(jobs["job"]["failed_layer"], 1)
         self.assertIn("walk_home failed", jobs["job"]["error"])
+
+    def test_continue_job_runs_pause_safety_finalizer(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            log_path = Path(tmpdir) / "job.log"
+            log_path.write_text("", encoding="utf-8")
+            jobs = {
+                "job": {
+                    "id": "job",
+                    "log_path": str(log_path),
+                    "layers": [{"index": 1, "name": "Layer 1"}],
+                }
+            }
+            ctx = make_context(jobs)
+            ctx.run_layer_with_auto_dips.return_value = "paused"
+            log = mock.Mock()
+
+            job_runner.continue_job_after_layer(ctx, "job", 0, log)
+
+        ctx.finalize_paused_job.assert_called_once_with("job", 1, log)
+        ctx.return_home.assert_not_called()
+
+    def test_resumed_job_runs_pause_safety_finalizer_when_paused_again(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            log_path = Path(tmpdir) / "job.log"
+            log_path.write_text("", encoding="utf-8")
+            jobs = {
+                "job": {
+                    "id": "job",
+                    "status": "paused",
+                    "paused_layer": 1,
+                    "log_path": str(log_path),
+                    "layers": [{"index": 1, "name": "Layer 1"}],
+                }
+            }
+            ctx = make_context(jobs)
+            ctx.run_layer_with_auto_dips.return_value = "paused"
+
+            job_runner.resume_paused_job(ctx, "job")
+
+        ctx.finalize_paused_job.assert_called_once()
+        self.assertEqual(ctx.finalize_paused_job.call_args.args[:2], ("job", 1))
+        ctx.return_home.assert_not_called()
 
     def test_recover_dip_retry_runs_dip_then_resumes_checkpoint(self):
         with tempfile.TemporaryDirectory() as tmpdir:

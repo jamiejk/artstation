@@ -28,7 +28,8 @@ class HardwareProtocolTests(unittest.TestCase):
         self.assertAlmostEqual(xy["y_mm"], 12.7, places=3)
 
     def test_direct_pen_servo_writes_expected_standard_commands(self):
-        port = FakeSerialPort(["OK", "OK", "OK", "OK", "OK", "OK"])
+        # SC4, SC5, SC11, SC12, SC8, SC9, SR, SP
+        port = FakeSerialPort(["OK"] * 8)
 
         with tempfile.TemporaryDirectory() as tmpdir:
             config = Path(tmpdir) / "axidraw_servo_conf.py"
@@ -45,9 +46,40 @@ class HardwareProtocolTests(unittest.TestCase):
 
         self.assertTrue(result["ok"])
         self.assertEqual(result["method"], "direct_ebb")
-        self.assertEqual(port.writes[:5], ["SC,4,28500\r", "SC,5,9000\r", "SC,11,2340\r", "SC,12,468\r", "SC,8,8\r"])
-        self.assertTrue(port.writes[5].startswith("SP,0,"))
-        self.assertTrue(port.writes[5].endswith(",1\r"))
+        self.assertEqual(
+            port.writes[:7],
+            [
+                "SC,4,28500\r",
+                "SC,5,9000\r",
+                "SC,11,2340\r",
+                "SC,12,468\r",
+                "SC,8,8\r",
+                "SC,9,3\r",
+                "SR,60000,1\r",
+            ],
+        )
+        self.assertTrue(port.writes[7].startswith("SP,0,"))
+        self.assertTrue(port.writes[7].endswith(",1\r"))
+
+    def test_pen_to_height_sets_absolute_pwm(self):
+        port = FakeSerialPort(["OK"] * 8)
+        with tempfile.TemporaryDirectory() as tmpdir:
+            config = Path(tmpdir) / "axidraw_servo_conf.py"
+            config.write_text("servo_min = 7000\nservo_max = 30600\n", encoding="utf-8")
+            result = hardware.run_pen_to_height_on_port(
+                port,
+                axicli_config=config,
+                height=50,
+                from_height=100,
+                rate_percent=100,
+            )
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["height"], 50.0)
+        # mid of 7000..30600
+        self.assertEqual(result["pwm"], 18800)
+        self.assertEqual(port.writes[0], "SC,4,18800\r")
+        self.assertEqual(port.writes[1], "SC,5,18800\r")
+        self.assertTrue(port.writes[-1].startswith("SP,0,"))
 
     def test_move_to_bed_target_sends_sm_and_returns_updated_position(self):
         axis_1, axis_2 = hardware.xy_mm_to_steps(25.4, 0.0)

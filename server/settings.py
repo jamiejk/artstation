@@ -97,6 +97,16 @@ def validate_pen_rate_raise(value: int) -> int:
     return value
 
 
+def validate_soft_out_mm(value: float) -> float:
+    try:
+        value = float(value)
+    except (TypeError, ValueError) as exc:
+        raise HTTPException(status_code=400, detail="soft_out_mm must be a number") from exc
+    if not math.isfinite(value) or not 0 <= value <= 50:
+        raise HTTPException(status_code=400, detail="soft_out_mm must be between 0 and 50 mm")
+    return round(value, 3)
+
+
 def validate_dip_interval(value: float) -> float:
     try:
         value = float(value)

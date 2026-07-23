@@ -46,6 +46,52 @@ class PlotExecutionTests(unittest.TestCase):
         self.assertEqual(plot_execution.classify_axicli_layer_result(0, ""), "done")
         self.assertEqual(plot_execution.classify_axicli_layer_result(1, ""), "failed")
 
+    def test_layer_plot_cmd_enables_soft_out_only_when_requested(self):
+        job = {
+            "speed_pendown": 10,
+            "speed_penup": 20,
+            "pen_pos_down": 0,
+            "pen_pos_up": 100,
+            "soft_out_mm": 2.5,
+        }
+        cmd = plot_execution.layer_plot_cmd(
+            job,
+            {},
+            axicli="/axicli-softout",
+            axicli_config=Path("/missing.conf"),
+            plotter_port="/dev/ttyTEST",
+            input_svg=Path("/tmp/input.svg"),
+            output_svg=Path("/tmp/progress.svg"),
+        )
+        self.assertEqual(cmd[0], "/axicli-softout")
+        self.assertEqual(cmd[cmd.index("--soft_out_mm") + 1], "2.5")
+
+    def test_layer_plot_cmd_snapshots_gradual_pen_profile_options(self):
+        job = {
+            "speed_pendown": 10,
+            "speed_penup": 20,
+            "pen_pos_down": 0,
+            "pen_pos_up": 100,
+            "gradual_ramp_mm": 4.375,
+            "gradual_exit_ramp_mm": 4.6875,
+            "gradual_tail_mm": 0.4375,
+            "gradual_segment_mm": 0.5,
+        }
+        cmd = plot_execution.layer_plot_cmd(
+            job,
+            {},
+            axicli="/axicli-softout",
+            axicli_config=Path("/missing.conf"),
+            plotter_port="/dev/ttyTEST",
+            input_svg=Path("/tmp/input.svg"),
+            output_svg=Path("/tmp/progress.svg"),
+        )
+
+        self.assertEqual(cmd[cmd.index("--gradual_ramp_mm") + 1], "4.375")
+        self.assertEqual(cmd[cmd.index("--gradual_exit_ramp_mm") + 1], "4.6875")
+        self.assertEqual(cmd[cmd.index("--gradual_tail_mm") + 1], "0.4375")
+        self.assertEqual(cmd[cmd.index("--gradual_segment_mm") + 1], "0.5")
+
     def test_resume_layer_replaces_stable_progress_file(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             root = Path(tmpdir)

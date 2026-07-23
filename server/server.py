@@ -29,6 +29,8 @@ try:
     from server import svg_utils
     from server import timing_log
     from server import auth
+    from server import pen_calibration
+    from server import pen_profiles
 except ImportError:
     import hardware
     import job_model
@@ -41,6 +43,8 @@ except ImportError:
     import svg_utils
     import timing_log
     import auth
+    import pen_calibration
+    import pen_profiles
 
 try:
     from server.ink_dip import (
@@ -71,6 +75,10 @@ INK_WELL_SETTINGS_PATH = BASE_DIR / "plotter_ink_well_settings.json"
 PAPER_SETTINGS_PATH = BASE_DIR / "plotter_paper_settings.json"
 
 AXICLI = os.environ.get("AXICLI", str(BASE_DIR / "venv" / "bin" / "axicli"))
+AXICLI_SOFT_OUT = os.environ.get(
+    "AXICLI_SOFT_OUT",
+    str(BASE_DIR / "scripts" / "axicli-softout"),
+)
 PLOTTER_PORT = os.environ.get("PLOTTER_PORT", "/dev/ttyACM0")
 AXICLI_CONFIG = Path(os.environ.get("AXICLI_CONFIG", str(BASE_DIR / "axidraw_servo_conf.py")))
 
@@ -105,8 +113,20 @@ position_current: dict | None = None
 home_position: dict | None = None
 position_calibration_id = uuid.uuid4().hex
 position_calibration_enabled = True
+position_bed_calibrated = False
+position_reference_reason = "not_calibrated"
+position_reference_updated_at = time.time()
 pen_settings_lock = threading.RLock()
-pen_settings = {"pen_pos_up": 65, "pen_pos_down": 35}
+pen_settings = {
+    "pen_pos_up": 65,
+    "pen_pos_down": 35,
+    "pause_clearance_pos": 100,
+    "pen_profile_id": pen_profiles.STANDARD_PROFILE_ID,
+}
+# Live absolute pen height on the 0–100 software map (for Shift+arrow Z jog).
+# None until first pen command / jog; then tracked in process memory only.
+pen_live_height_lock = threading.RLock()
+pen_live_height: float | None = None
 AXIDRAW_PEN_POSITION_MIN = settings_utils.AXIDRAW_PEN_POSITION_MIN
 AXIDRAW_PEN_POSITION_MAX = settings_utils.AXIDRAW_PEN_POSITION_MAX
 plot_settings_lock = threading.RLock()
@@ -116,6 +136,7 @@ plot_settings = {
     "pen_delay_down": 0,
     "pen_delay_up": 0,
     "pen_rate_raise": 75,
+    "soft_out_mm": 0.0,
     "auto_dip_enabled": False,
     "dip_interval_s": 60.0,
 }
@@ -247,11 +268,13 @@ BED_WIDTH_MM = float(os.environ.get("PLOTTER_BED_WIDTH_MM", "609.6"))
 BED_HEIGHT_MM = float(os.environ.get("PLOTTER_BED_HEIGHT_MM", "914.4"))
 DEFAULT_PEN_POS_DOWN = int(os.environ.get("PLOTTER_PEN_POS_DOWN", "35"))
 DEFAULT_PEN_POS_UP = int(os.environ.get("PLOTTER_PEN_POS_UP", "65"))
+DEFAULT_PAUSE_CLEARANCE_POS = int(os.environ.get("PLOTTER_PAUSE_CLEARANCE_POS", "100"))
 DEFAULT_SPEED_PENDOWN = int(os.environ.get("PLOTTER_SPEED_PENDOWN", "15"))
 DEFAULT_SPEED_PENUP = int(os.environ.get("PLOTTER_SPEED_PENUP", "40"))
 DEFAULT_PEN_DELAY_DOWN = int(os.environ.get("PLOTTER_PEN_DELAY_DOWN", "0"))
 DEFAULT_PEN_DELAY_UP = int(os.environ.get("PLOTTER_PEN_DELAY_UP", "0"))
 DEFAULT_PEN_RATE_RAISE = int(os.environ.get("PLOTTER_PEN_RATE_RAISE", "75"))
+DEFAULT_SOFT_OUT_MM = float(os.environ.get("PLOTTER_SOFT_OUT_MM", "0"))
 DEFAULT_PEN_RATE_LOWER = int(os.environ.get("PLOTTER_PEN_RATE_LOWER", "50"))
 THEORETICAL_MAX_XY_SPEED_MM_S = float(os.environ.get("PLOTTER_MAX_XY_SPEED_MM_S", "280"))
 SAFE_MANUAL_MAX_XY_SPEED_MM_S = float(os.environ.get("PLOTTER_SAFE_MANUAL_MAX_XY_SPEED_MM_S", "200"))
@@ -293,7 +316,8 @@ def now() -> float:
 
 
 def load_position_offset() -> None:
-    global position_offset, position_current, home_position, position_calibration_id, position_calibration_enabled
+    global position_offset, position_current, home_position, position_calibration_id, position_calibration_enabled, position_bed_calibrated
+    global position_reference_reason, position_reference_updated_at
     try:
         data = state_store.read_json(POSITION_PATH)
         if data is None:
@@ -310,6 +334,12 @@ def load_position_offset() -> None:
             position_calibration_id = data["calibration_id"]
             has_calibration_id = True
         position_calibration_enabled = bool(data.get("calibration_enabled", True))
+        position_bed_calibrated = bool(data.get("bed_calibrated", False))
+        position_reference_reason = str(
+            data.get("position_reference_reason")
+            or ("restored" if position_bed_calibrated else "not_calibrated")
+        )
+        position_reference_updated_at = float(data.get("position_reference_updated_at") or now())
         current = data.get("current_position")
         if isinstance(current, dict):
             position_current = {
@@ -335,6 +365,9 @@ def save_position_offset_unlocked() -> None:
         "y_mm": position_offset["y_mm"],
         "calibration_id": position_calibration_id,
         "calibration_enabled": position_calibration_enabled,
+        "bed_calibrated": position_bed_calibrated,
+        "position_reference_reason": position_reference_reason,
+        "position_reference_updated_at": position_reference_updated_at,
     }
     if position_current is not None:
         data["current_position"] = dict(position_current)
@@ -348,6 +381,12 @@ def renew_position_calibration_unlocked() -> None:
     position_calibration_id = uuid.uuid4().hex
 
 
+def mark_position_reference_unlocked(reason: str) -> None:
+    global position_reference_reason, position_reference_updated_at
+    position_reference_reason = str(reason)
+    position_reference_updated_at = now()
+
+
 def current_position_calibration_id() -> str:
     with position_lock:
         return position_calibration_id
@@ -355,9 +394,19 @@ def current_position_calibration_id() -> str:
 
 def load_pen_settings() -> None:
     def normalize(defaults: dict, data: dict) -> dict:
+        try:
+            profile_id = pen_profiles.resolve_profile(
+                data.get("pen_profile_id", defaults["pen_profile_id"])
+            )["id"]
+        except ValueError:
+            profile_id = defaults["pen_profile_id"]
         return {
             "pen_pos_up": int(data.get("pen_pos_up", defaults["pen_pos_up"])),
             "pen_pos_down": int(data.get("pen_pos_down", defaults["pen_pos_down"])),
+            "pause_clearance_pos": int(
+                data.get("pause_clearance_pos", defaults["pause_clearance_pos"])
+            ),
+            "pen_profile_id": profile_id,
         }
 
     settings_store.load_settings(
@@ -367,6 +416,8 @@ def load_pen_settings() -> None:
         defaults={
             "pen_pos_up": DEFAULT_PEN_POS_UP,
             "pen_pos_down": DEFAULT_PEN_POS_DOWN,
+            "pause_clearance_pos": DEFAULT_PAUSE_CLEARANCE_POS,
+            "pen_profile_id": pen_profiles.STANDARD_PROFILE_ID,
         },
         normalize=normalize,
     )
@@ -383,6 +434,9 @@ def current_pen_settings() -> dict:
 def apply_pen_settings_to_job(job: dict, settings: dict) -> None:
     job["pen_pos_down"] = settings["pen_pos_down"]
     job["pen_pos_up"] = settings["pen_pos_up"]
+    if "pause_clearance_pos" in settings:
+        job["pause_clearance_pos"] = settings["pause_clearance_pos"]
+    job.update(pen_profiles.job_snapshot(settings.get("pen_profile_id")))
 
 
 def load_plot_settings() -> None:
@@ -393,6 +447,7 @@ def load_plot_settings() -> None:
             "pen_delay_down": validate_pen_delay_down(data.get("pen_delay_down", defaults["pen_delay_down"])),
             "pen_delay_up": validate_pen_delay_up(data.get("pen_delay_up", defaults["pen_delay_up"])),
             "pen_rate_raise": validate_pen_rate_raise(data.get("pen_rate_raise", defaults["pen_rate_raise"])),
+            "soft_out_mm": validate_soft_out_mm(data.get("soft_out_mm", defaults["soft_out_mm"])),
             "auto_dip_enabled": resolve_auto_dip_flag(data.get("auto_dip_enabled", defaults["auto_dip_enabled"])),
             "dip_interval_s": validate_dip_interval(data.get("dip_interval_s", defaults["dip_interval_s"])),
         }
@@ -407,6 +462,7 @@ def load_plot_settings() -> None:
             "pen_delay_down": DEFAULT_PEN_DELAY_DOWN,
             "pen_delay_up": DEFAULT_PEN_DELAY_UP,
             "pen_rate_raise": DEFAULT_PEN_RATE_RAISE,
+            "soft_out_mm": DEFAULT_SOFT_OUT_MM,
             "auto_dip_enabled": False,
             "dip_interval_s": 60.0,
         },
@@ -429,8 +485,9 @@ def apply_plot_settings_to_job(job: dict, settings: dict) -> None:
         "pen_delay_down",
         "pen_delay_up",
         "pen_rate_raise",
+        "soft_out_mm",
     ):
-        job[key] = settings[key]
+        job[key] = settings.get(key, 0.0) if key == "soft_out_mm" else settings[key]
 
 
 def paper_dimensions(settings: dict) -> dict:
@@ -634,6 +691,18 @@ def validate_pen_rate_raise(value: int) -> int:
     return settings_utils.validate_pen_rate_raise(value)
 
 
+def validate_soft_out_mm(value: float) -> float:
+    return settings_utils.validate_soft_out_mm(value)
+
+
+def axicli_for_job(job: dict) -> str:
+    return (
+        AXICLI_SOFT_OUT
+        if float(job.get("soft_out_mm", 0) or 0) > 0 or pen_profiles.gradual_enabled(job)
+        else AXICLI
+    )
+
+
 def validate_dip_interval(value: float) -> float:
     return settings_utils.validate_dip_interval(value)
 
@@ -676,12 +745,15 @@ def current_position_estimate(raw_xy: dict | None) -> dict | None:
 
 def set_current_position_unlocked(x_mm: float, y_mm: float) -> None:
     global position_current
-    position_current = positioning.clamp_bed_position(
-        x_mm,
-        y_mm,
-        bed_width_mm=BED_WIDTH_MM,
-        bed_height_mm=BED_HEIGHT_MM,
-    )
+    if position_calibration_enabled and position_bed_calibrated:
+        position_current = positioning.clamp_bed_position(
+            x_mm,
+            y_mm,
+            bed_width_mm=BED_WIDTH_MM,
+            bed_height_mm=BED_HEIGHT_MM,
+        )
+    else:
+        position_current = {"x_mm": float(x_mm), "y_mm": float(y_mm)}
 
 
 def set_home_position_unlocked(x_mm: float, y_mm: float) -> None:
@@ -701,13 +773,15 @@ def current_home_position() -> dict:
         return dict(home_position)
 
 
-def invalidate_position_reference_unlocked() -> None:
-    global position_current, home_position
+def invalidate_position_reference_unlocked(reason: str = "position_unverified") -> None:
+    global position_current, home_position, position_bed_calibrated
     position_current = None
     home_position = None
+    position_bed_calibrated = False
     position_offset["x_mm"] = 0.0
     position_offset["y_mm"] = 0.0
     renew_position_calibration_unlocked()
+    mark_position_reference_unlocked(reason)
     save_position_offset_unlocked()
 
 
@@ -718,6 +792,20 @@ def require_software_position() -> None:
         raise HTTPException(
             status_code=409,
             detail="Calibrate the current position first with Set X/Y before jogging or dragging.",
+        )
+
+
+def require_position_calibration_enabled(action: str) -> None:
+    with position_lock:
+        enabled = position_calibration_enabled
+        calibrated = position_bed_calibrated
+    if not enabled or not calibrated:
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                f"{action} requires a completed Plot Bed Calibration. "
+                "Use the arrow controls for relative movement until calibration is complete."
+            ),
         )
 
 
@@ -755,23 +843,35 @@ def save_job_unlocked(job_id: str) -> None:
     state_store.save_job(JOBS_DIR, job_id, jobs[job_id])
 
 
-def load_jobs() -> None:
+def load_jobs() -> bool:
     """
     Load job metadata saved on disk.
 
     If the server restarts while a job is active, we do NOT automatically resume it.
     We mark it interrupted and let you rerun deliberately.
     """
+    position_was_uncertain = False
     with jobs_lock:
         for path in state_store.iter_job_meta_paths(JOBS_DIR):
             try:
                 job_id, job = state_store.read_job_meta(path)
                 changed = False
+                previous_status = job.get("status")
 
-                if job.get("status") in {
-                    "queued",
-                    "queued_for_operator",
-                    "waiting_for_operator",
+                if previous_status in PRE_START_JOB_STATUSES or (
+                    previous_status == "interrupted"
+                    and job.get("started_at") is None
+                    and job.get("current_layer") is None
+                    and job.get("last_completed_layer") is None
+                ):
+                    job["status"] = "cancelled"
+                    job["finished_at"] = job.get("finished_at") or now()
+                    job["cancelled_at"] = job.get("cancelled_at") or now()
+                    job["operator_message"] = (
+                        "Server restarted before this job began, so the pending job was cancelled."
+                    )
+                    changed = True
+                elif previous_status in {
                     "queued_for_resume",
                     "running",
                     "dipping",
@@ -782,6 +882,7 @@ def load_jobs() -> None:
                         "Use rerun to start it again from the beginning."
                     )
                     changed = True
+                    position_was_uncertain = True
 
                 jobs[job_id] = job
                 if changed:
@@ -789,6 +890,7 @@ def load_jobs() -> None:
 
             except Exception as exc:
                 print(f"Could not load {path}: {exc}", flush=True)
+    return position_was_uncertain
 
 
 def update_job(job_id: str, **fields) -> None:
@@ -950,6 +1052,42 @@ def set_active_process(proc: subprocess.Popen | None, job_id: str | None = None)
         active_process_job_id = job_id
 
 
+def reconcile_position_after_axicli(job_id: str | None, log) -> dict | None:
+    """Refresh the software cursor from EBB counters after AxiCLI releases serial."""
+    last_error: Exception | None = None
+    for _attempt in range(3):
+        try:
+            with hardware_lock:
+                with serial.Serial(PLOTTER_PORT, timeout=1) as port:
+                    _axis_1, _axis_2, raw_current = read_step_position(port)
+            actual = current_position_estimate(raw_current)
+            if actual is None:
+                raise RuntimeError("Controller returned no usable XY position")
+            with position_lock:
+                set_current_position_unlocked(actual["x_mm"], actual["y_mm"])
+                mark_position_reference_unlocked("plotter_reconciled")
+                save_position_offset_unlocked()
+            log.write(
+                "Position reconciled after AxiCLI"
+                f"{f' job {job_id}' if job_id else ''}: "
+                f"({actual['x_mm']:.3f}, {actual['y_mm']:.3f}) mm\n"
+            )
+            log.flush()
+            return actual
+        except (serial.SerialException, RuntimeError, ValueError) as exc:
+            last_error = exc
+            time.sleep(0.05)
+
+    with position_lock:
+        invalidate_position_reference_unlocked("plot_position_unverified")
+    log.write(
+        "WARNING: Position could not be verified after AxiCLI; "
+        f"cursor and Home were cleared: {last_error!r}\n"
+    )
+    log.flush()
+    return None
+
+
 def run_axicli_command(cmd: list[str], log, *, job_id: str | None = None) -> int:
     # Hold hardware_lock only for Popen + registration, not for proc.wait().
     # Releasing before wait() lets the telemetry worker run; it checks
@@ -966,9 +1104,11 @@ def run_axicli_command(cmd: list[str], log, *, job_id: str | None = None) -> int
             )
             set_active_process(proc, job_id)
     try:
-        return proc.wait()
+        returncode = proc.wait()
     finally:
         set_active_process(None, None)
+    reconcile_position_after_axicli(job_id, log)
+    return returncode
 
 
 def axicli_cmd() -> list[str]:
@@ -1705,6 +1845,36 @@ def attempt_dip_clearance_raise(job: dict, log) -> None:
         log.flush()
 
 
+def attempt_pause_clearance_raise(job: dict, log) -> dict:
+    """Raise to the dedicated pause clearance after AxiDraw releases the port."""
+    pen_defaults = current_pen_settings()
+    plot_defaults = current_plot_settings()
+    clearance_pos = validate_pen_position(
+        pen_defaults.get("pause_clearance_pos", DEFAULT_PAUSE_CLEARANCE_POS),
+        "pause_clearance_pos",
+    )
+    try:
+        with hardware_lock:
+            result = run_pen_manual_direct_first(
+                raised=True,
+                up_pos=clearance_pos,
+                down_pos=int(job.get("pen_pos_down", pen_defaults["pen_pos_down"])),
+                raise_rate=int(job.get("pen_rate_raise", plot_defaults["pen_rate_raise"])),
+                lower_rate=DEFAULT_PEN_RATE_LOWER,
+                delay_up_ms=int(job.get("pen_delay_up", plot_defaults["pen_delay_up"])),
+                delay_down_ms=int(job.get("pen_delay_down", plot_defaults["pen_delay_down"])),
+            )
+        if not result.get("ok"):
+            raise RuntimeError(f"Pause clearance command failed: {result!r}")
+        log.write(f"Pause safety lift completed at clearance position {clearance_pos}.\n")
+        log.flush()
+        return {"ok": True, "position": clearance_pos, "method": result.get("method")}
+    except Exception as exc:
+        log.write(f"WARNING: Pause safety lift failed: {exc!r}\n")
+        log.flush()
+        return {"ok": False, "position": clearance_pos, "error": repr(exc)}
+
+
 def return_from_failed_dip_without_loading_ink(job: dict, log, return_position: dict) -> dict:
     with hardware_lock:
         well = job.get("ink_well") or {}
@@ -1742,6 +1912,20 @@ def manual_hardware_priority_active() -> bool:
         return time.monotonic() < manual_hardware_priority_until
 
 
+def set_pen_live_height(height: float | None) -> None:
+    global pen_live_height
+    with pen_live_height_lock:
+        if height is None:
+            pen_live_height = None
+        else:
+            pen_live_height = max(0.0, min(100.0, float(height)))
+
+
+def current_pen_live_height() -> float | None:
+    with pen_live_height_lock:
+        return pen_live_height
+
+
 def overlay_live_hardware_fields(state: dict) -> dict:
     result = dict(state)
     with active_process_lock:
@@ -1752,6 +1936,9 @@ def overlay_live_hardware_fields(state: dict) -> dict:
         result["position_offset"] = dict(position_offset)
         result["position_calibration_id"] = position_calibration_id
         result["position_calibration_enabled"] = position_calibration_enabled
+        result["position_bed_calibrated"] = position_bed_calibrated
+        result["position_reference_reason"] = position_reference_reason
+        result["position_reference_updated_at"] = position_reference_updated_at
         result["home_position"] = dict(home_position) if home_position is not None else None
         result["position_source"] = "software" if position_current is not None else "step_counter"
         if position_current is not None:
@@ -1760,6 +1947,11 @@ def overlay_live_hardware_fields(state: dict) -> dict:
             result["position_estimate"] = current_position_estimate(raw_xy_mm)
     result["active_process"] = {"pid": active_pid, "job_id": active_job}
     result["paper"] = current_paper_settings()
+    live = current_pen_live_height()
+    result["pen_live_height"] = live
+    pen_defaults = current_pen_settings()
+    result["pen_pos_up"] = pen_defaults.get("pen_pos_up")
+    result["pen_pos_down"] = pen_defaults.get("pen_pos_down")
     return result
 
 
@@ -1776,6 +1968,36 @@ def update_cached_hardware_state(fields: dict) -> None:
     with hardware_state_lock:
         cached_hardware_state.clear()
         cached_hardware_state.update(fields)
+
+
+def motor_enabled_from_raw_pins(raw: dict | None) -> bool | None:
+    if not isinstance(raw, dict):
+        return None
+
+    def enabled(value) -> bool | None:
+        pin = str(value).rsplit(",", 1)[-1].strip()
+        if pin == "0":
+            return True
+        if pin == "1":
+            return False
+        return None
+
+    axes = [enabled(raw.get("axis_1")), enabled(raw.get("axis_2"))]
+    if False in axes:
+        return False
+    if axes == [True, True]:
+        return True
+    return None
+
+
+def invalidate_position_if_motors_disabled(raw: dict | None) -> bool:
+    if motor_enabled_from_raw_pins(raw) is not False:
+        return False
+    with position_lock:
+        if position_current is None and home_position is None and not position_bed_calibrated:
+            return False
+        invalidate_position_reference_unlocked("motors_disabled")
+    return True
 
 
 def read_hardware_state_from_device(previous: dict | None = None, *, full: bool = False) -> dict:
@@ -1815,6 +2037,7 @@ def read_hardware_state_from_device(previous: dict | None = None, *, full: bool 
             "telemetry_updated_at": now(),
         }
 
+    invalidate_position_if_motors_disabled(motor_enable_raw)
     return overlay_live_hardware_fields(
         {
             "busy": False,
@@ -1844,9 +2067,9 @@ def poll_hardware_state_once(*, full: bool = False) -> bool:
         has_active_process = active_process is not None
     if has_active_process:
         with hardware_state_lock:
-            cached_hardware_state[busy] = True
-            cached_hardware_state[telemetry_stale] = True
-            cached_hardware_state[telemetry_updated_at] = now()
+            cached_hardware_state["busy"] = True
+            cached_hardware_state["telemetry_stale"] = True
+            cached_hardware_state["telemetry_updated_at"] = now()
         return True
     if not hardware_lock.acquire(blocking=False):
         return False
@@ -2026,7 +2249,7 @@ def run_layer(job: dict, layer: dict, log) -> str:
             job,
             layer,
             log,
-            axicli=AXICLI,
+            axicli=axicli_for_job(job),
             axicli_config=AXICLI_CONFIG,
             plotter_port=PLOTTER_PORT,
             run_axicli_command=run_axicli_command,
@@ -2082,7 +2305,7 @@ def resume_layer(job: dict, layer: dict, log) -> str:
             job,
             layer,
             log,
-            axicli=AXICLI,
+            axicli=axicli_for_job(job),
             axicli_config=AXICLI_CONFIG,
             plotter_port=PLOTTER_PORT,
             run_axicli_command=run_axicli_command,
@@ -2269,7 +2492,31 @@ def job_runner_context() -> SimpleNamespace:
         execute_dip_cycle=execute_dip_cycle,
         return_from_failed_dip_without_loading_ink=return_from_failed_dip_without_loading_ink,
         attempt_dip_clearance_raise=attempt_dip_clearance_raise,
+        finalize_paused_job=finalize_paused_job,
     )
+
+
+def finalize_paused_job(job_id: str, layer_number: int, log) -> dict:
+    with jobs_lock:
+        job = jobs[job_id]
+    clearance = attempt_pause_clearance_raise(job, log)
+    message = (
+        f"Paused safely with pen raised to clearance {clearance['position']}."
+        if clearance["ok"]
+        else "Paused, but the emergency pen-clearance lift failed. Raise the pen manually before working."
+    )
+    update_job(
+        job_id,
+        status="paused",
+        paused_layer=layer_number,
+        pause_clearance=clearance,
+        operator_message=message,
+        log_tail=log_tail(Path(job["log_path"])),
+    )
+    announce_on_linux_box(
+        f"Job {job_id} paused during Layer {layer_number}. {message}"
+    )
+    return clearance
 
 
 def continue_job_after_layer(job_id: str, start_layer_number: int, log) -> None:
@@ -2377,16 +2624,7 @@ def worker() -> None:
                         break
 
                     if result == "paused":
-                        update_job(
-                            job_id,
-                            status="paused",
-                            paused_layer=layer_number,
-                            log_tail=log_tail(log_path),
-                        )
-                        announce_on_linux_box(
-                            f"Job {job_id} paused during Layer {layer_number}. "
-                            "Resume handling is needed before continuing."
-                        )
+                        finalize_paused_job(job_id, layer_number, log)
                         stop_current_job = True
                         break
 
@@ -2476,7 +2714,9 @@ load_pen_settings()
 load_plot_settings()
 load_paper_settings()
 load_ink_well_settings()
-load_jobs()
+if load_jobs():
+    with position_lock:
+        invalidate_position_reference_unlocked("server_restarted_during_plot")
 if os.environ.get("PLOTTER_DISABLE_WORKER") != "1":
     threading.Thread(target=hardware_telemetry_worker, daemon=True).start()
     threading.Thread(target=worker, daemon=True).start()
@@ -2520,13 +2760,19 @@ def control_config(request: Request):
         "plotter_port": PLOTTER_PORT,
         "pen_pos_up": pen_defaults["pen_pos_up"],
         "pen_pos_down": pen_defaults["pen_pos_down"],
+        "pause_clearance_pos": pen_defaults["pause_clearance_pos"],
+        "pen_profile_id": pen_defaults["pen_profile_id"],
+        "pen_profiles": pen_profiles.profile_catalog(),
         "speed_pendown": plot_defaults["speed_pendown"],
         "speed_penup": plot_defaults["speed_penup"],
         "pen_delay_down": plot_defaults["pen_delay_down"],
         "pen_delay_up": plot_defaults["pen_delay_up"],
         "pen_rate_raise": plot_defaults["pen_rate_raise"],
+        "soft_out_mm": plot_defaults["soft_out_mm"],
         "auto_dip_enabled": plot_defaults["auto_dip_enabled"],
         "dip_interval_s": plot_defaults["dip_interval_s"],
+        "job_rotation_supported": True,
+        "job_rerun_rotation_supported": True,
         "ink_well": well_defaults,
         "paper": paper_defaults,
         "paper_sizes": PAPER_SIZES_MM,
@@ -2617,8 +2863,10 @@ def _build_job_record(
         "pen_delay_down": settings["pen_delay_down"],
         "pen_delay_up": settings["pen_delay_up"],
         "pen_rate_raise": settings["pen_rate_raise"],
+        "soft_out_mm": settings.get("soft_out_mm", 0.0),
         "pen_pos_down": settings["pen_pos_down"],
         "pen_pos_up": settings["pen_pos_up"],
+        **pen_profiles.job_snapshot(settings.get("pen_profile_id")),
         "ink_well": well_snapshot,
         "auto_dip_enabled": auto_dip,
         "dip_interval_s": dip_interval_s if auto_dip else None,
@@ -2647,6 +2895,8 @@ async def plot_layers(
     pen_delay_down: Optional[int] = Form(None),
     pen_delay_up: Optional[int] = Form(None),
     pen_rate_raise: Optional[int] = Form(None),
+    soft_out_mm: Optional[float] = Form(None),
+    pen_profile_id: Optional[str] = Form(None),
     pen_pos_down: Optional[int] = Form(None),
     pen_pos_up: Optional[int] = Form(None),
     auto_dip: Optional[bool] = Form(None),
@@ -2656,6 +2906,7 @@ async def plot_layers(
     automatic_ink_dipping: Optional[bool] = Form(None),
     autoDip: Optional[bool] = Form(None),
     dip_interval_s: Optional[float] = Form(None),
+    rotation_degrees: int = Form(0),
     x_plotter_token: Optional[str] = Header(default=None),
 ):
     """
@@ -2668,6 +2919,10 @@ async def plot_layers(
       "Light blue,Dark blue,Black,White"
     """
     check_token(x_plotter_token)
+    try:
+        rotation_degrees = svg_utils.validate_rotation_degrees(rotation_degrees)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
     pen_defaults = current_pen_settings()
     plot_defaults = current_plot_settings()
     well_settings = current_ink_well_settings()
@@ -2694,12 +2949,22 @@ async def plot_layers(
     if pen_rate_raise is None:
         pen_rate_raise = plot_defaults["pen_rate_raise"]
     pen_rate_raise = validate_pen_rate_raise(pen_rate_raise)
+    # Direct internal/test callers do not pass FastAPI's Form sentinel.
+    if soft_out_mm is None or not isinstance(soft_out_mm, (int, float, str)):
+        soft_out_mm = plot_defaults["soft_out_mm"]
+    soft_out_mm = validate_soft_out_mm(soft_out_mm)
     if pen_pos_down is None:
         pen_pos_down = pen_defaults["pen_pos_down"]
     if pen_pos_up is None:
         pen_pos_up = pen_defaults["pen_pos_up"]
     pen_pos_down = validate_pen_position(pen_pos_down, "pen_pos_down")
     pen_pos_up = validate_pen_position(pen_pos_up, "pen_pos_up")
+    if pen_profile_id is None or not isinstance(pen_profile_id, str):
+        pen_profile_id = pen_defaults["pen_profile_id"]
+    try:
+        pen_profile_id = pen_profiles.resolve_profile(pen_profile_id)["id"]
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
     upload_settings = {
         "speed_pendown": speed_pendown,
@@ -2707,8 +2972,10 @@ async def plot_layers(
         "pen_delay_down": pen_delay_down,
         "pen_delay_up": pen_delay_up,
         "pen_rate_raise": pen_rate_raise,
+        "soft_out_mm": soft_out_mm,
         "pen_pos_down": pen_pos_down,
         "pen_pos_up": pen_pos_up,
+        "pen_profile_id": pen_profile_id,
     }
     well_snapshot = None
     upload_home = None
@@ -2767,6 +3034,12 @@ async def plot_layers(
         with input_svg.open("wb") as out:
             shutil.copyfileobj(uploaded.file, out)
 
+        if rotation_degrees:
+            try:
+                svg_utils.rotate_svg_file(input_svg, rotation_degrees)
+            except ValueError as exc:
+                raise HTTPException(status_code=400, detail=str(exc)) from exc
+
         name = (
             names[idx - 1]
             if idx - 1 < len(names) and names[idx - 1]
@@ -2787,6 +3060,7 @@ async def plot_layers(
                 dip_interval_s=dip_interval_s,
             )
         )
+        layers[-1]["rotation_degrees"] = rotation_degrees
 
     log_path = LOGS_DIR / f"{job_id}.log"
 
@@ -2799,12 +3073,14 @@ async def plot_layers(
         auto_dip=auto_dip,
         dip_interval_s=dip_interval_s,
         home=upload_home,
+        extra_fields={"rotation_degrees": rotation_degrees},
     )
 
     response_payload = {
         "job_id": job_id,
         "status": "queued",
         "layer_count": len(layers),
+        "rotation_degrees": rotation_degrees,
         "auto_dip_enabled": auto_dip,
         "dip_estimates": layer_dip_estimates(layers),
         "status_url": f"/jobs/{job_id}",
@@ -2849,6 +3125,7 @@ def list_jobs(
                     "pen_delay_down": job.get("pen_delay_down", DEFAULT_PEN_DELAY_DOWN),
                     "pen_delay_up": job.get("pen_delay_up", DEFAULT_PEN_DELAY_UP),
                     "pen_rate_raise": job.get("pen_rate_raise", DEFAULT_PEN_RATE_RAISE),
+                    "soft_out_mm": job.get("soft_out_mm", 0.0),
                     "pen_pos_down": job.get("pen_pos_down"),
                     "pen_pos_up": job.get("pen_pos_up"),
                     "operator_message": job.get("operator_message"),
@@ -2868,6 +3145,7 @@ def list_jobs(
                     "plot_preview": job_plot_preview(job) if status in PLOT_PREVIEW_STATUSES else None,
                     "plot_origin": job.get("plot_origin"),
                     "paper": job.get("paper"),
+                    "rotation_degrees": job.get("rotation_degrees", 0),
                     "rerun_of": job.get("rerun_of"),
                     "log_path": job.get("log_path"),
                     "timing_summary": job_timing_summary(job),
@@ -3244,6 +3522,7 @@ def delete_job(
 
 def rerun_job(
     job_id: str,
+    payload: dict = Body(default={}),
     x_plotter_token: Optional[str] = Header(default=None),
 ):
     """
@@ -3256,6 +3535,8 @@ def rerun_job(
       paper not loaded, etc.
     """
     check_token(x_plotter_token)
+    if not isinstance(payload, dict):
+        payload = {}
 
     with jobs_lock:
         original = jobs.get(job_id)
@@ -3281,8 +3562,17 @@ def rerun_job(
     new_job_dir.mkdir(parents=True, exist_ok=True)
 
     current_plot_defaults = current_plot_settings()
+    current_pen_defaults = current_pen_settings()
     auto_dip = bool(original.get("auto_dip_enabled"))
     dip_interval_s = original.get("dip_interval_s")
+    try:
+        original_rotation_degrees = svg_utils.validate_rotation_degrees(original.get("rotation_degrees", 0))
+        rotation_degrees = svg_utils.validate_rotation_degrees(
+            payload.get("rotation_degrees", original_rotation_degrees)
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    additional_rotation_degrees = (rotation_degrees - original_rotation_degrees) % 360
     well_settings = current_ink_well_settings()
     well_snapshot = None
     rerun_home = None
@@ -3302,8 +3592,10 @@ def rerun_job(
         "pen_delay_down": current_plot_defaults["pen_delay_down"],
         "pen_delay_up": current_plot_defaults["pen_delay_up"],
         "pen_rate_raise": current_plot_defaults["pen_rate_raise"],
+        "soft_out_mm": current_plot_defaults["soft_out_mm"],
         "pen_pos_down": original.get("pen_pos_down", 35),
         "pen_pos_up": original.get("pen_pos_up", 65),
+        "pen_profile_id": current_pen_defaults["pen_profile_id"],
     }
 
     new_layers = []
@@ -3321,6 +3613,11 @@ def rerun_job(
         new_input = layer_dir / "input.svg"
         layer_dir.mkdir(parents=True, exist_ok=True)
         shutil.copy(old_input, new_input)
+        if additional_rotation_degrees:
+            try:
+                svg_utils.rotate_svg_file(new_input, additional_rotation_degrees)
+            except ValueError as exc:
+                raise HTTPException(status_code=400, detail=str(exc)) from exc
 
         new_layers.append(
             _build_layer_record(
@@ -3336,6 +3633,7 @@ def rerun_job(
                 dip_interval_s=dip_interval_s,
             )
         )
+        new_layers[-1]["rotation_degrees"] = rotation_degrees
 
     log_path = LOGS_DIR / f"{new_job_id}.log"
 
@@ -3348,7 +3646,10 @@ def rerun_job(
         auto_dip=auto_dip,
         dip_interval_s=dip_interval_s,
         home=rerun_home,
-        extra_fields={"rerun_of": job_id},
+        extra_fields={
+            "rerun_of": job_id,
+            "rotation_degrees": rotation_degrees,
+        },
     )
 
     with jobs_lock:
@@ -3362,6 +3663,7 @@ def rerun_job(
         "status": "queued",
         "rerun_of": job_id,
         "layer_count": len(new_layers),
+        "rotation_degrees": rotation_degrees,
         "status_url": f"/jobs/{new_job_id}",
     }
 
@@ -3382,6 +3684,7 @@ def plotter_state(
                 "plot_footprint": job_plot_footprint(job),
                 "plot_origin": job.get("plot_origin"),
                 "paper": job.get("paper"),
+                "plot_preview": job_plot_preview(job) if job.get("status") in PLOT_PREVIEW_STATUSES else None,
             }
             for job in sorted(jobs.values(), key=lambda item: item.get("created_at") or 0, reverse=True)[:5]
         ]
@@ -3418,6 +3721,14 @@ def plotter_pen(
     down_pos = int(payload.get("pen_pos_down", saved_pen_settings["pen_pos_down"]))
     plot_defaults = current_plot_settings()
 
+    # Allow per-command override of pen delays; fall back to global plot settings.
+    if "pen_delay_up" in payload:
+        payload["pen_delay_up"] = validate_pen_delay_up(payload["pen_delay_up"])
+    if "pen_delay_down" in payload:
+        payload["pen_delay_down"] = validate_pen_delay_down(payload["pen_delay_down"])
+    delay_up_ms = int(payload.get("pen_delay_up", plot_defaults.get("pen_delay_up", DEFAULT_PEN_DELAY_UP)))
+    delay_down_ms = int(payload.get("pen_delay_down", plot_defaults.get("pen_delay_down", DEFAULT_PEN_DELAY_DOWN)))
+
     require_hardware_idle()
     try:
         with hardware_lock:
@@ -3427,8 +3738,8 @@ def plotter_pen(
                 down_pos=down_pos,
                 raise_rate=plot_defaults.get("pen_rate_raise", DEFAULT_PEN_RATE_RAISE),
                 lower_rate=DEFAULT_PEN_RATE_LOWER,
-                delay_up_ms=plot_defaults.get("pen_delay_up", DEFAULT_PEN_DELAY_UP),
-                delay_down_ms=plot_defaults.get("pen_delay_down", DEFAULT_PEN_DELAY_DOWN),
+                delay_up_ms=delay_up_ms,
+                delay_down_ms=delay_down_ms,
             )
     except serial.SerialException as exc:
         raise HTTPException(status_code=500, detail=str(exc)) from exc
@@ -3448,7 +3759,83 @@ def plotter_pen(
     else:
         result["pen_settings"] = saved_pen_settings
 
+    # Track live height for Shift+arrow Z jog (absolute map position).
+    set_pen_live_height(up_pos if position == "up" else down_pos)
+    result["pen_live_height"] = current_pen_live_height()
+    result["pen_delay_up_ms"] = delay_up_ms
+    result["pen_delay_down_ms"] = delay_down_ms
     return result
+
+
+def plotter_pen_jog(
+    request: Request,
+    payload: dict = Body(default={}),
+    x_plotter_token: Optional[str] = Header(default=None),
+):
+    """Nudge pen height on the absolute 0–100 software map (direct Z control).
+
+    Used by Shift+ArrowUp / Shift+ArrowDown so the operator can walk the servo
+    to the visual physical limits without thinking in PWM units.
+    """
+    require_localhost(request)
+    check_token(x_plotter_token)
+    require_hardware_idle()
+
+    payload = payload or {}
+    plot_defaults = current_plot_settings()
+    pen_defaults = current_pen_settings()
+
+    if "position" in payload and payload["position"] is not None:
+        target = float(payload["position"])
+    else:
+        try:
+            delta = float(payload.get("delta", 0))
+        except (TypeError, ValueError) as exc:
+            raise HTTPException(status_code=400, detail="delta must be a number") from exc
+        live = current_pen_live_height()
+        if live is None:
+            # Start from mid-band between saved up/down so first jog is sane.
+            live = (float(pen_defaults["pen_pos_up"]) + float(pen_defaults["pen_pos_down"])) / 2.0
+        target = live + delta
+
+    if not math.isfinite(target):
+        raise HTTPException(status_code=400, detail="position must be finite")
+    target = max(0.0, min(100.0, target))
+    from_height = current_pen_live_height()
+    rate = int(plot_defaults.get("pen_rate_raise", DEFAULT_PEN_RATE_RAISE))
+
+    mark_manual_hardware_priority(2.0)
+    try:
+        with hardware_lock:
+            with serial.Serial(PLOTTER_PORT, timeout=2) as port:
+                result = hardware.run_pen_to_height_on_port(
+                    port,
+                    axicli_config=AXICLI_CONFIG,
+                    height=target,
+                    from_height=from_height,
+                    rate_percent=rate,
+                    label=f"Z jog to {target:g}",
+                )
+    except serial.SerialException as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+    except RuntimeError as exc:
+        raise HTTPException(status_code=500, detail=repr(exc)) from exc
+    finally:
+        mark_manual_hardware_priority(0.5)
+
+    set_pen_live_height(target)
+    return {
+        "ok": True,
+        "pen_live_height": current_pen_live_height(),
+        "pwm": result.get("pwm"),
+        "delay_ms": result.get("delay_ms"),
+        "method": result.get("method"),
+        "message": (
+            f"Z map height {target:g}/100 "
+            f"(0 = map floor / deepest, 100 = map ceiling / highest). "
+            f"Shift+↑ raise, Shift+↓ lower until it stops moving."
+        ),
+    }
 
 
 def plotter_pen_settings(
@@ -3460,13 +3847,329 @@ def plotter_pen_settings(
     require_localhost(request)
     check_token(x_plotter_token)
 
+    resolved_profile_id = None
+    if "pen_profile_id" in payload:
+        try:
+            resolved_profile_id = pen_profiles.resolve_profile(payload["pen_profile_id"])["id"]
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
     with pen_settings_lock:
         if "pen_pos_down" in payload:
             pen_settings["pen_pos_down"] = validate_pen_position(payload["pen_pos_down"], "pen_pos_down")
         if "pen_pos_up" in payload:
             pen_settings["pen_pos_up"] = validate_pen_position(payload["pen_pos_up"], "pen_pos_up")
+        if "pause_clearance_pos" in payload:
+            pen_settings["pause_clearance_pos"] = validate_pen_position(
+                payload["pause_clearance_pos"],
+                "pause_clearance_pos",
+            )
+        if resolved_profile_id is not None:
+            pen_settings["pen_profile_id"] = resolved_profile_id
         save_pen_settings_unlocked()
         return {"ok": True, "pen_settings": dict(pen_settings)}
+
+
+# Map units above max-lower for pen mounting: leaves room to press deeper (to
+# max lower) and to lift (toward max lift) for Z modulation / soft entry.
+PEN_SEAT_OFFSET_ABOVE_LOWER = 5
+
+
+def plotter_pen_seat(
+    request: Request,
+    payload: dict = Body(default={}),
+    x_plotter_token: Optional[str] = Header(default=None),
+):
+    """Move Z to a mount height just above max lower for physical pen seating.
+
+    After max lift / max lower are set, this goes to (max lower + a few map
+    steps). The operator mounts the pen so the nib just marks the paper. That
+    reserves headroom *below* (firmer drawing at max lower) and *above* (clear
+    lift toward max lift) for later Z control.
+    """
+    require_localhost(request)
+    check_token(x_plotter_token)
+    require_hardware_idle()
+
+    payload = payload or {}
+    pen_defaults = current_pen_settings()
+    plot_defaults = current_plot_settings()
+
+    if "pen_pos_up" in payload:
+        up_pos = validate_pen_position(payload["pen_pos_up"], "pen_pos_up")
+    else:
+        up_pos = int(pen_defaults["pen_pos_up"])
+    if "pen_pos_down" in payload:
+        down_pos = validate_pen_position(payload["pen_pos_down"], "pen_pos_down")
+    else:
+        down_pos = int(pen_defaults["pen_pos_down"])
+
+    if up_pos <= down_pos:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "Set Max Lift and Set Max Lower first (pen up must be higher than pen down). "
+                f"Current pen up={up_pos}, pen down={down_pos}."
+            ),
+        )
+
+    try:
+        offset = int(payload.get("offset", PEN_SEAT_OFFSET_ABOVE_LOWER))
+    except (TypeError, ValueError) as exc:
+        raise HTTPException(status_code=400, detail="offset must be an integer") from exc
+    if offset < 1 or offset > 20:
+        raise HTTPException(status_code=400, detail="offset must be between 1 and 20")
+
+    # Mount a few stops *above* max lower (higher number = more raised on the map).
+    seat_height = float(down_pos + offset)
+    if seat_height >= up_pos:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"Not enough room between max lower ({down_pos}) and max lift ({up_pos}) "
+                f"for a +{offset} mount offset. Widen the lift/lower gap first."
+            ),
+        )
+
+    rate = int(plot_defaults.get("pen_rate_raise", DEFAULT_PEN_RATE_RAISE))
+    from_height = current_pen_live_height()
+
+    mark_manual_hardware_priority(15.0)
+    try:
+        with hardware_lock:
+            with serial.Serial(PLOTTER_PORT, timeout=2) as port:
+                result = hardware.run_pen_to_height_on_port(
+                    port,
+                    axicli_config=AXICLI_CONFIG,
+                    height=seat_height,
+                    from_height=from_height,
+                    rate_percent=rate,
+                    label=f"Seat pen at max lower +{offset} ({seat_height:g})",
+                )
+    except serial.SerialException as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+    except RuntimeError as exc:
+        raise HTTPException(status_code=500, detail=repr(exc)) from exc
+    finally:
+        mark_manual_hardware_priority(2.0)
+
+    if not result.get("ok"):
+        raise HTTPException(status_code=500, detail=result)
+
+    set_pen_live_height(seat_height)
+    room_below = int(round(seat_height - down_pos))
+    room_above = int(round(up_pos - seat_height))
+    return {
+        "ok": True,
+        "position": "seat",
+        "seat_height": seat_height,
+        "offset_above_lower": offset,
+        "pen_pos_up": up_pos,
+        "pen_pos_down": down_pos,
+        "pen_live_height": current_pen_live_height(),
+        "room_below": room_below,
+        "room_above": room_above,
+        "message": (
+            f"Z is at map height {seat_height:g} "
+            f"(max lower {down_pos} + {offset} stops). "
+            "Mount the pen so the nib just touches the paper and leaves a light mark, then tighten. "
+            f"You then have ~{room_below} map units of press available toward max lower "
+            f"and ~{room_above} toward max lift — headroom for Z control both ways. "
+            "Optional: Run Pen Test Strip to check contact and clearance."
+        ),
+        "method": result.get("method"),
+        "delay_ms": result.get("delay_ms"),
+        "pwm": result.get("pwm"),
+    }
+
+
+def plotter_pen_calibrate(
+    request: Request,
+    payload: dict = Body(default={}),
+    x_plotter_token: Optional[str] = Header(default=None),
+):
+    """Run pen-height calibration from the current position.
+
+    1. Contact-dot ladder (high/light → low/heavy) to find the lightest solid pen-down.
+    2. Clearance dashes with a pen-up gap to verify pen-up clears the paper.
+    """
+    require_localhost(request)
+    check_token(x_plotter_token)
+    require_hardware_idle()
+    require_software_position()
+    require_position_calibration_enabled("pen calibration")
+
+    payload = payload or {}
+    pen_defaults = current_pen_settings()
+    plot_defaults = current_plot_settings()
+
+    if "pen_pos_down" in payload:
+        down_pos = validate_pen_position(payload["pen_pos_down"], "pen_pos_down")
+    else:
+        down_pos = int(pen_defaults["pen_pos_down"])
+    if "pen_pos_up" in payload:
+        up_pos = validate_pen_position(payload["pen_pos_up"], "pen_pos_up")
+    else:
+        up_pos = int(pen_defaults["pen_pos_up"])
+    if up_pos <= down_pos:
+        raise HTTPException(
+            status_code=400,
+            detail="pen_pos_up must be greater than pen_pos_down for calibration",
+        )
+
+    contact_step = int(payload.get("contact_step", pen_calibration.DEFAULT_CONTACT_STEP))
+    extra_deep = int(payload.get("extra_deep", pen_calibration.DEFAULT_CONTACT_EXTRA_DEEP))
+    if contact_step < 1 or contact_step > 25:
+        raise HTTPException(status_code=400, detail="contact_step must be between 1 and 25")
+    if extra_deep < 0 or extra_deep > 20:
+        raise HTTPException(status_code=400, detail="extra_deep must be between 0 and 20")
+
+    # Persist panel heights used for the clearance strip and contact ladder.
+    with pen_settings_lock:
+        pen_settings["pen_pos_down"] = down_pos
+        pen_settings["pen_pos_up"] = up_pos
+        save_pen_settings_unlocked()
+        saved_pen = dict(pen_settings)
+
+    footprint = pen_calibration.calibration_footprint(
+        pen_up=up_pos,
+        pen_down=down_pos,
+        contact_step=contact_step,
+        extra_deep=extra_deep,
+    )
+    start = current_software_position()
+    try:
+        actions = pen_calibration.build_calibration_actions(
+            start,
+            pen_up=up_pos,
+            pen_down=down_pos,
+            contact_step=contact_step,
+            extra_deep=extra_deep,
+            validate_bed_target=validate_bed_target,
+        )
+    except HTTPException:
+        raise
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    raise_rate = int(plot_defaults.get("pen_rate_raise", DEFAULT_PEN_RATE_RAISE))
+    lower_rate = int(DEFAULT_PEN_RATE_LOWER)
+    delay_up_ms = int(plot_defaults.get("pen_delay_up", DEFAULT_PEN_DELAY_UP))
+    delay_down_ms = int(plot_defaults.get("pen_delay_down", DEFAULT_PEN_DELAY_DOWN))
+
+    test_log_path = LOGS_DIR / "pen-calibration.log"
+    end_position = None
+    mark_manual_hardware_priority(60.0)
+    try:
+        with hardware_lock:
+            with serial.Serial(PLOTTER_PORT, timeout=2) as port:
+                require_enabled_high_resolution_motors(port)
+                with test_log_path.open("a", encoding="utf-8", errors="replace") as log:
+                    log.write(
+                        f"\nPen calibration at {now():.3f} "
+                        f"start=({start['x_mm']:.3f},{start['y_mm']:.3f}) "
+                        f"up={up_pos} down={down_pos} "
+                        f"contact={footprint['contact_heights']}\n"
+                    )
+                    log.flush()
+                    live_h = current_pen_live_height()
+                    for action in actions:
+                        kind = action["type"]
+                        if kind == "pen":
+                            action_down_delay = delay_down_ms
+                            if not action["raised"] and delay_down_ms < 50:
+                                action_down_delay = 50
+                            _run_pen_servo_on_port_locked(
+                                port,
+                                raised=bool(action["raised"]),
+                                up_pos=int(action.get("up_pos", up_pos)),
+                                down_pos=int(action.get("down_pos", down_pos)),
+                                raise_rate=raise_rate,
+                                lower_rate=lower_rate,
+                                delay_up_ms=delay_up_ms,
+                                delay_down_ms=action_down_delay,
+                                label=action.get("label"),
+                                log=log,
+                            )
+                            set_pen_live_height(up_pos if action["raised"] else down_pos)
+                            live_h = current_pen_live_height()
+                        elif kind == "height":
+                            h = float(action["height"])
+                            hardware.run_pen_to_height_on_port(
+                                port,
+                                axicli_config=AXICLI_CONFIG,
+                                height=h,
+                                from_height=live_h,
+                                rate_percent=raise_rate,
+                                label=action.get("label"),
+                                log=log,
+                            )
+                            set_pen_live_height(h)
+                            live_h = h
+                        elif kind == "move":
+                            end_position = _move_to_bed_target_on_port_locked(
+                                port,
+                                {"x_mm": action["x_mm"], "y_mm": action["y_mm"]},
+                                speed_mm_s=float(action["speed_mm_s"]),
+                                log=log,
+                            )
+                        elif kind == "dwell":
+                            ms = max(0, int(action.get("ms", 0)))
+                            log.write(f"{action.get('label', 'Dwell')}: {ms} ms\n")
+                            log.flush()
+                            if ms > 0:
+                                time.sleep(ms / 1000.0)
+                        else:
+                            raise RuntimeError(f"Unknown pen calibration action: {action!r}")
+                    # Final hard raise with the panel pen-up/down (distinct SC targets).
+                    _run_pen_servo_on_port_locked(
+                        port,
+                        raised=True,
+                        up_pos=up_pos,
+                        down_pos=down_pos,
+                        raise_rate=raise_rate,
+                        lower_rate=lower_rate,
+                        delay_up_ms=max(delay_up_ms, 0),
+                        delay_down_ms=delay_down_ms,
+                        extra_settle_ms=150,
+                        label="Final pen-up after calibration",
+                        log=log,
+                    )
+                    log.write("Pen calibration complete.\n")
+                    log.flush()
+    except HTTPException:
+        raise
+    except serial.SerialException as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+    except RuntimeError as exc:
+        raise HTTPException(status_code=500, detail=repr(exc)) from exc
+    except Exception as exc:
+        raise HTTPException(
+            status_code=500,
+            detail={"message": "Pen calibration failed", "error": repr(exc)},
+        ) from exc
+    finally:
+        mark_manual_hardware_priority(2.0)
+
+    message = pen_calibration.describe_what_to_look_for(
+        pen_up=up_pos,
+        pen_down=down_pos,
+        contact_step=contact_step,
+        extra_deep=extra_deep,
+    )
+    message = f"{message} {pen_calibration.suggested_pen_down_note()}"
+
+    return {
+        "ok": True,
+        "message": message,
+        "pen_settings": saved_pen,
+        "start": start,
+        "end": end_position or start,
+        "footprint": footprint,
+        "contact_heights": footprint["contact_heights"],
+        "log_path": str(test_log_path),
+    }
+
 
 
 def plotter_plot_settings(
@@ -3488,6 +4191,8 @@ def plotter_plot_settings(
             plot_settings["pen_delay_up"] = validate_pen_delay_up(payload["pen_delay_up"])
         if "pen_rate_raise" in payload:
             plot_settings["pen_rate_raise"] = validate_pen_rate_raise(payload["pen_rate_raise"])
+        if "soft_out_mm" in payload:
+            plot_settings["soft_out_mm"] = validate_soft_out_mm(payload["soft_out_mm"])
         if "auto_dip_enabled" in payload:
             plot_settings["auto_dip_enabled"] = resolve_auto_dip_flag(payload["auto_dip_enabled"])
         if "dip_interval_s" in payload:
@@ -3752,7 +4457,7 @@ def plotter_motors(
         result["message"] = "Motors enabled; position calibration preserved."
     else:
         with position_lock:
-            invalidate_position_reference_unlocked()
+            invalidate_position_reference_unlocked("motors_disabled")
         result["position_invalidated"] = True
         result["message"] = "Motors disabled; recalibrate after re-enabling before moving."
     return result
@@ -3766,13 +4471,25 @@ def plotter_set_home(
     check_token(x_plotter_token)
     require_hardware_idle()
 
+    with position_lock:
+        if position_calibration_enabled and not position_bed_calibrated:
+            raise HTTPException(
+                status_code=409,
+                detail="Set Bed Top Left successfully before setting Home while Plot Bed Calibration is ON.",
+            )
+
     with hardware_lock:
         with serial.Serial(PLOTTER_PORT, timeout=1) as port:
             require_enabled_high_resolution_motors(port)
             _axis_1, _axis_2, raw_current = read_step_position(port)
-            current = current_position_estimate(raw_current)
-            if current is None:
-                raise HTTPException(status_code=500, detail="Could not calculate current hardware position")
+            with position_lock:
+                calibration_enabled = position_calibration_enabled
+            if calibration_enabled:
+                current = current_position_estimate(raw_current)
+                if current is None:
+                    raise HTTPException(status_code=500, detail="Could not calculate current hardware position")
+            else:
+                current = {"x_mm": 0.0, "y_mm": 0.0}
             port.write(b"CS\r")
             response = port.readline().decode("ascii", errors="replace").strip()
 
@@ -3786,14 +4503,23 @@ def plotter_set_home(
         position_offset["y_mm"] = current["y_mm"]
         set_current_position_unlocked(current["x_mm"], current["y_mm"])
         set_home_position_unlocked(current["x_mm"], current["y_mm"])
+        mark_position_reference_unlocked(
+            "home_set" if calibration_enabled else "local_home_set"
+        )
         save_position_offset_unlocked()
 
     return {
         "ok": True,
-        "message": "Current calibrated position is now home",
+        "message": (
+            "Current calibrated position is now Home"
+            if calibration_enabled
+            else "Current physical position is now local Home (0, 0)"
+        ),
         "response": response,
         "position_offset": dict(position_offset),
+        "position_estimate": current,
         "home_position": current,
+        "bed_calibrated": position_bed_calibrated,
     }
 
 
@@ -3802,6 +4528,7 @@ def plotter_set_position(
     payload: dict = Body(...),
     x_plotter_token: Optional[str] = Header(default=None),
 ):
+    global position_bed_calibrated
     require_localhost(request)
     check_token(x_plotter_token)
     require_hardware_idle()
@@ -3850,7 +4577,9 @@ def plotter_set_position(
                 position_offset["x_mm"] = next_x - bed_current["x_mm"]
             if "y_mm" in payload:
                 position_offset["y_mm"] = next_y - bed_current["y_mm"]
+        position_bed_calibrated = True
         set_current_position_unlocked(next_x, next_y)
+        mark_position_reference_unlocked("bed_calibrated")
         save_position_offset_unlocked()
         offset = dict(position_offset)
         current = dict(position_current)
@@ -3864,6 +4593,7 @@ def plotter_set_position(
         "home_position": dict(home_position) if home_position is not None else None,
         "home_reset": reset_home,
         "position_source": "software",
+        "bed_calibrated": position_bed_calibrated,
     }
 
 
@@ -3884,14 +4614,22 @@ def plotter_position_calibration_toggle(
     global position_calibration_enabled
     with position_lock:
         position_calibration_enabled = enabled
+        mark_position_reference_unlocked(
+            "calibration_enabled" if enabled else "calibration_disabled"
+        )
         save_position_offset_unlocked()
         return {
             "ok": True,
             "calibration_enabled": position_calibration_enabled,
+            "bed_calibrated": position_bed_calibrated,
             "position_calibration_id": position_calibration_id,
             "position_estimate": dict(position_current) if position_current is not None else None,
             "home_position": dict(home_position) if home_position is not None else None,
-            "message": "Plot-bed calibration enabled." if enabled else "Plot-bed calibration disabled; saved calibration is retained but absolute moves may be unsafe.",
+            "message": (
+                "Plot-bed calibration enabled."
+                if enabled
+                else "Plot-bed calibration disabled; arrow controls now use unrestricted local relative movement."
+            ),
         }
 
 
@@ -4003,7 +4741,6 @@ def plotter_jog(
     require_localhost(request)
     check_token(x_plotter_token)
     require_hardware_idle()
-    require_software_position()
 
     x_mm = float(payload.get("x_mm", 0.0) or 0.0)
     y_mm = float(payload.get("y_mm", 0.0) or 0.0)
@@ -4021,9 +4758,6 @@ def plotter_jog(
     if max(abs(x_mm), abs(y_mm)) > 50:
         raise HTTPException(status_code=400, detail="Jog distance must be <= 50 mm per command")
 
-    current = current_software_position()
-    target_x, target_y = validate_bed_target(current["x_mm"] + x_mm, current["y_mm"] + y_mm)
-
     raw_delta = bed_delta_to_raw_delta(x_mm, y_mm)
     axis_1, axis_2 = xy_mm_to_steps(raw_delta["x_mm"], raw_delta["y_mm"])
     distance = (x_mm * x_mm + y_mm * y_mm) ** 0.5
@@ -4034,8 +4768,23 @@ def plotter_jog(
         try:
             with serial.Serial(PLOTTER_PORT, timeout=2) as port:
                 require_cached_high_resolution_motors(port)
+                _axis_1_before, _axis_2_before, raw_before = read_step_position(port)
+                current = current_position_estimate(raw_before)
+                if current is None:
+                    raise HTTPException(status_code=500, detail="Could not calculate current hardware position")
+                target_x = current["x_mm"] + x_mm
+                target_y = current["y_mm"] + y_mm
+                with position_lock:
+                    calibration_enabled = position_calibration_enabled
+                with position_lock:
+                    bed_calibrated = position_bed_calibrated
+                if calibration_enabled and bed_calibrated:
+                    target_x, target_y = validate_bed_target(target_x, target_y)
+                elif not (math.isfinite(target_x) and math.isfinite(target_y)):
+                    raise HTTPException(status_code=400, detail="Jog target must be finite")
                 move_response = raw_command(port, f"SM,{duration_ms},{axis_1},{axis_2}\r")
                 wait_for_motion_idle(port, max(2.0, duration_ms / 1000.0 + 1.0))
+                _axis_1_after, _axis_2_after, raw_after = read_step_position(port)
         except serial.SerialException as exc:
             raise HTTPException(status_code=500, detail=str(exc)) from exc
         except TimeoutError as exc:
@@ -4050,7 +4799,8 @@ def plotter_jog(
         )
 
     with position_lock:
-        set_current_position_unlocked(target_x, target_y)
+        actual = current_position_estimate(raw_after) or {"x_mm": target_x, "y_mm": target_y}
+        set_current_position_unlocked(actual["x_mm"], actual["y_mm"])
         save_position_offset_unlocked()
         current = dict(position_current)
 
@@ -4075,6 +4825,7 @@ def plotter_move_to(
     require_localhost(request)
     check_token(x_plotter_token)
     require_hardware_idle()
+    require_position_calibration_enabled("Absolute movement")
     require_software_position()
 
     if "x_mm" not in payload or "y_mm" not in payload:

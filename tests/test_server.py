@@ -64,6 +64,9 @@ class RouteContractTests(unittest.TestCase):
                 (("POST",), "/plotter/move_to"),
                 (("POST",), "/plotter/paper"),
                 (("POST",), "/plotter/pen"),
+                (("POST",), "/plotter/pen/calibrate"),
+                (("POST",), "/plotter/pen/jog"),
+                (("POST",), "/plotter/pen/seat"),
                 (("POST",), "/plotter/pen_settings"),
                 (("POST",), "/plotter/plot_settings"),
                 (("POST",), "/plotter/position/calibration"),
@@ -149,6 +152,40 @@ class MotionSafetyTests(unittest.TestCase):
         self.assertTrue(state["connected"])
         self.assertEqual(state["port"], "/dev/test")
 
+    def test_active_plot_marks_telemetry_busy_without_reading_serial(self):
+        with (
+            mock.patch.object(server, "active_process", object()),
+            mock.patch.object(server, "manual_hardware_priority_active", return_value=False),
+            mock.patch.object(server.serial, "Serial", side_effect=AssertionError("serial access")),
+        ):
+            updated = server.poll_hardware_state_once()
+
+        self.assertTrue(updated)
+        with server.hardware_state_lock:
+            self.assertTrue(server.cached_hardware_state["busy"])
+            self.assertTrue(server.cached_hardware_state["telemetry_stale"])
+
+    def test_motor_pin_telemetry_decodes_enable_state(self):
+        self.assertTrue(server.motor_enabled_from_raw_pins({"axis_1": "PI,0", "axis_2": "PI,0"}))
+        self.assertFalse(server.motor_enabled_from_raw_pins({"axis_1": "PI,0", "axis_2": "PI,1"}))
+        self.assertIsNone(server.motor_enabled_from_raw_pins({"axis_1": "", "axis_2": ""}))
+
+    def test_external_motor_disable_invalidates_saved_cursor(self):
+        with server.position_lock:
+            server.position_bed_calibrated = True
+            server.position_current = {"x_mm": 10.0, "y_mm": 20.0}
+            server.home_position = {"x_mm": 10.0, "y_mm": 20.0}
+
+        with mock.patch.object(server, "save_position_offset_unlocked"):
+            changed = server.invalidate_position_if_motors_disabled(
+                {"axis_1": "PI,0", "axis_2": "PI,1"}
+            )
+
+        self.assertTrue(changed)
+        self.assertIsNone(server.position_current)
+        self.assertIsNone(server.home_position)
+        self.assertEqual(server.position_reference_reason, "motors_disabled")
+
     def test_motor_disable_uses_direct_ebb_command(self):
         request = mock.Mock()
         request.client.host = "127.0.0.1"
@@ -197,6 +234,58 @@ class MotionSafetyTests(unittest.TestCase):
         resolution.assert_called_once_with(serial_port)
         raw.assert_called_once_with(serial_port, "EM,1,1\r")
         manual.assert_not_called()
+
+
+class PlotPositionLifecycleTests(unittest.TestCase):
+    def test_axicli_exit_reconciles_cursor_from_controller_steps(self):
+        with server.position_lock:
+            server.position_calibration_enabled = True
+            server.position_bed_calibrated = True
+            server.position_offset = {"x_mm": 10.0, "y_mm": 20.0}
+            server.position_current = {"x_mm": 500.0, "y_mm": 600.0}
+
+        with (
+            mock.patch.object(server.serial, "Serial"),
+            mock.patch.object(
+                server,
+                "read_step_position",
+                return_value=(1, 2, {"x_mm": -300.0, "y_mm": -125.0}),
+            ),
+            mock.patch.object(server, "save_position_offset_unlocked"),
+        ):
+            actual = server.reconcile_position_after_axicli("job-1", io.StringIO())
+
+        self.assertEqual(actual, {"x_mm": 135.0, "y_mm": 320.0})
+        self.assertEqual(server.current_software_position(), actual)
+        self.assertEqual(server.position_reference_reason, "plotter_reconciled")
+
+    def test_axicli_reconcile_failure_invalidates_position_reference(self):
+        with (
+            mock.patch.object(
+                server.serial,
+                "Serial",
+                side_effect=server.serial.SerialException("port unavailable"),
+            ),
+            mock.patch.object(server.time, "sleep"),
+            mock.patch.object(server, "invalidate_position_reference_unlocked") as invalidate,
+        ):
+            actual = server.reconcile_position_after_axicli("job-1", io.StringIO())
+
+        self.assertIsNone(actual)
+        invalidate.assert_called_once_with("plot_position_unverified")
+
+    def test_run_axicli_reconciles_after_process_releases_serial(self):
+        process = mock.Mock()
+        process.wait.return_value = 0
+        with (
+            mock.patch.object(server.subprocess, "Popen", return_value=process),
+            mock.patch.object(server, "reconcile_position_after_axicli") as reconcile,
+        ):
+            result = server.run_axicli_command(["axicli", "plot.svg"], io.StringIO(), job_id="job-1")
+
+        self.assertEqual(result, 0)
+        reconcile.assert_called_once()
+        self.assertIsNone(server.active_process)
 
 
 class PaperSettingsTests(unittest.TestCase):
@@ -364,6 +453,21 @@ class PlotSettingsTests(unittest.TestCase):
             with self.subTest(rate=value), self.assertRaises(HTTPException):
                 server.validate_pen_rate_raise(value)
 
+    def test_validates_soft_out_distance(self):
+        self.assertEqual(server.validate_soft_out_mm(0), 0.0)
+        self.assertEqual(server.validate_soft_out_mm("2.5"), 2.5)
+        for value in (-0.1, 50.1, "bad", float("nan")):
+            with self.subTest(value=value), self.assertRaises(HTTPException):
+                server.validate_soft_out_mm(value)
+
+    def test_soft_out_selects_vendored_axicli_only_when_enabled(self):
+        self.assertEqual(server.axicli_for_job({"soft_out_mm": 0}), server.AXICLI)
+        self.assertEqual(server.axicli_for_job({"soft_out_mm": 2}), server.AXICLI_SOFT_OUT)
+        self.assertEqual(
+            server.axicli_for_job({"soft_out_mm": 0, "gradual_ramp_mm": 4.375}),
+            server.AXICLI_SOFT_OUT,
+        )
+
     def test_current_plot_settings_returns_a_copy(self):
         current = server.current_plot_settings()
         current["pen_delay_down"] = -50
@@ -424,11 +528,21 @@ class PlotSettingsTests(unittest.TestCase):
     def test_current_pen_settings_can_be_applied_to_paused_job(self):
         job = {"pen_pos_down": 35, "pen_pos_up": 60, "pen_delay_down": -50}
 
-        server.apply_pen_settings_to_job(job, {"pen_pos_down": 30, "pen_pos_up": 60})
+        server.apply_pen_settings_to_job(
+            job,
+            {
+                "pen_pos_down": 30,
+                "pen_pos_up": 60,
+                "pen_profile_id": "staedtler_marsmatic",
+            },
+        )
 
         self.assertEqual(job["pen_pos_down"], 30)
         self.assertEqual(job["pen_pos_up"], 60)
         self.assertEqual(job["pen_delay_down"], -50)
+        self.assertEqual(job["pen_profile_name"], "Staedtler Marsmatic")
+        self.assertEqual(job["gradual_ramp_mm"], 4.375)
+        self.assertEqual(job["gradual_exit_ramp_mm"], 4.6875)
 
     def test_plotter_pen_uses_direct_ebb_before_axicli(self):
         request = mock.Mock()
@@ -523,9 +637,115 @@ class PlotSettingsTests(unittest.TestCase):
             self.assertEqual(list(Path(tmpdir).glob("*resumed*")), [])
 
 
+class ResumeEndpointTests(unittest.TestCase):
+    def setUp(self):
+        server.jobs.clear()
+        while not server.job_queue.empty():
+            server.job_queue.get_nowait()
+
+    def tearDown(self):
+        server.jobs.clear()
+        while not server.job_queue.empty():
+            server.job_queue.get_nowait()
+
+    def test_paper_off_job_without_plot_origin_can_resume(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            progress_svg = Path(tmpdir) / "progress.svg"
+            progress_svg.write_text("<svg/>", encoding="utf-8")
+            job_id = "paper-off-paused-job"
+            server.jobs[job_id] = {
+                "id": job_id,
+                "status": "paused",
+                "current_layer": 1,
+                "paused_layer": 1,
+                "plot_origin": None,
+                "paper": {
+                    "enabled": False,
+                    "top_right": {"x_mm": 500.0, "y_mm": 700.0},
+                },
+                "layers": [
+                    {
+                        "index": 1,
+                        "name": "Layer 1",
+                        "progress_svg": str(progress_svg),
+                    }
+                ],
+            }
+
+            with (
+                mock.patch.object(server, "require_hardware_idle"),
+                mock.patch.object(server, "save_job_unlocked"),
+            ):
+                result = server.resume_job(job_id, x_plotter_token="test-token")
+
+            self.assertEqual(result["status"], "queued_for_resume")
+            self.assertEqual(server.jobs[job_id]["status"], "queued_for_resume")
+            self.assertEqual(server.job_queue.get_nowait(), job_id)
+
+
+class PauseClearanceTests(unittest.TestCase):
+    def test_pause_clearance_uses_dedicated_position_and_only_raises(self):
+        job = {
+            "id": "pause-job",
+            "pen_pos_down": 35,
+            "pen_rate_raise": 80,
+            "pen_delay_up": 25,
+            "pen_delay_down": 10,
+        }
+        original = server.current_pen_settings()
+        try:
+            with server.pen_settings_lock:
+                server.pen_settings["pause_clearance_pos"] = 100
+            with mock.patch.object(
+                server,
+                "run_pen_manual_direct_first",
+                return_value={"ok": True, "method": "direct_ebb"},
+            ) as raise_pen:
+                result = server.attempt_pause_clearance_raise(job, io.StringIO())
+        finally:
+            with server.pen_settings_lock:
+                server.pen_settings.update(original)
+
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["position"], 100)
+        self.assertTrue(raise_pen.call_args.kwargs["raised"])
+        self.assertEqual(raise_pen.call_args.kwargs["up_pos"], 100)
+        self.assertEqual(raise_pen.call_args.kwargs["down_pos"], 35)
+
+    def test_pause_state_is_preserved_when_clearance_raise_fails(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            log_path = Path(tmpdir) / "job.log"
+            log_path.write_text("", encoding="utf-8")
+            job_id = "pause-failure-job"
+            server.jobs[job_id] = {
+                "id": job_id,
+                "status": "running",
+                "log_path": str(log_path),
+            }
+            with (
+                log_path.open("a", encoding="utf-8") as log,
+                mock.patch.object(
+                    server,
+                    "attempt_pause_clearance_raise",
+                    return_value={"ok": False, "position": 100, "error": "servo fault"},
+                ),
+                mock.patch.object(server, "save_job_unlocked"),
+                mock.patch.object(server, "announce_on_linux_box"),
+            ):
+                result = server.finalize_paused_job(job_id, 1, log)
+
+        self.assertFalse(result["ok"])
+        self.assertEqual(server.jobs[job_id]["status"], "paused")
+        self.assertIn("failed", server.jobs[job_id]["operator_message"])
+        server.jobs.pop(job_id, None)
+
+
 class HomePositionTests(unittest.TestCase):
     def setUp(self):
         with server.position_lock:
+            server.position_calibration_enabled = True
+            server.position_bed_calibrated = True
+            server.position_offset.update({"x_mm": 0.0, "y_mm": 0.0})
             server.position_current = None
             server.home_position = None
 
@@ -562,6 +782,116 @@ class HomePositionTests(unittest.TestCase):
             {"enabled": True},
             x_plotter_token="test-token",
         )
+
+    def test_calibration_off_keeps_local_position_unbounded(self):
+        with server.position_lock:
+            server.position_calibration_enabled = False
+            server.set_current_position_unlocked(-12.5, 930.0)
+
+        self.assertEqual(server.current_software_position(), {"x_mm": -12.5, "y_mm": 930.0})
+
+    def test_set_home_requires_completed_bed_calibration_when_enabled(self):
+        request = mock.Mock()
+        request.client.host = "127.0.0.1"
+        with server.position_lock:
+            server.position_calibration_enabled = True
+            server.position_bed_calibrated = False
+
+        with mock.patch.object(server, "require_hardware_idle"):
+            with self.assertRaises(HTTPException) as raised:
+                server.plotter_set_home(request, x_plotter_token="test-token")
+
+        self.assertEqual(raised.exception.status_code, 409)
+        self.assertIn("Set Bed Top Left", str(raised.exception.detail))
+
+    def test_calibration_off_set_home_creates_local_origin(self):
+        request = mock.Mock()
+        request.client.host = "127.0.0.1"
+        serial_port = mock.Mock()
+        serial_port.readline.return_value = b"OK\r\n"
+
+        with server.position_lock:
+            server.position_calibration_enabled = False
+            server.position_offset.update({"x_mm": 200.0, "y_mm": 300.0})
+
+        with (
+            mock.patch.object(server, "require_hardware_idle"),
+            mock.patch.object(server.serial, "Serial") as serial_cls,
+            mock.patch.object(server, "require_enabled_high_resolution_motors"),
+            mock.patch.object(
+                server,
+                "read_step_position",
+                return_value=(100, 200, {"x_mm": 50.0, "y_mm": 75.0}),
+            ),
+            mock.patch.object(server, "save_position_offset_unlocked"),
+        ):
+            serial_cls.return_value.__enter__.return_value = serial_port
+            result = server.plotter_set_home(request, x_plotter_token="test-token")
+
+        self.assertEqual(result["position_estimate"], {"x_mm": 0.0, "y_mm": 0.0})
+        self.assertEqual(result["home_position"], {"x_mm": 0.0, "y_mm": 0.0})
+        self.assertIn("local Home", result["message"])
+        serial_port.write.assert_called_once_with(b"CS\r")
+
+    def test_calibration_off_allows_negative_relative_jog(self):
+        request = mock.Mock()
+        request.client.host = "127.0.0.1"
+        serial_port = object()
+        with server.position_lock:
+            server.position_calibration_enabled = False
+            server.position_offset.update({"x_mm": 0.0, "y_mm": 0.0})
+            server.position_current = None
+
+        with (
+            mock.patch.object(server, "require_hardware_idle"),
+            mock.patch.object(server.serial, "Serial") as serial_cls,
+            mock.patch.object(server, "require_cached_high_resolution_motors"),
+            mock.patch.object(
+                server,
+                "read_step_position",
+                side_effect=[
+                    (0, 0, {"x_mm": 0.0, "y_mm": 0.0}),
+                    (0, 0, {"x_mm": 0.0, "y_mm": 2.0}),
+                ],
+            ),
+            mock.patch.object(server, "raw_command", return_value="OK") as command,
+            mock.patch.object(server, "wait_for_motion_idle"),
+            mock.patch.object(server, "save_position_offset_unlocked"),
+        ):
+            serial_cls.return_value.__enter__.return_value = serial_port
+            result = server.plotter_jog(
+                request,
+                {"x_mm": -2.0, "y_mm": 0.0, "speed_mm_s": 25.0},
+                x_plotter_token="test-token",
+            )
+
+        self.assertEqual(result["position_estimate"], {"x_mm": -2.0, "y_mm": 0.0})
+        command.assert_called_once()
+
+    def test_pending_calibration_allows_unrestricted_relative_position(self):
+        with server.position_lock:
+            server.position_calibration_enabled = True
+            server.position_bed_calibrated = False
+            server.set_current_position_unlocked(-5.0, 920.0)
+
+        self.assertEqual(server.current_software_position(), {"x_mm": -5.0, "y_mm": 920.0})
+
+    def test_calibration_off_rejects_absolute_bed_dragging(self):
+        request = mock.Mock()
+        request.client.host = "127.0.0.1"
+        with server.position_lock:
+            server.position_calibration_enabled = False
+
+        with mock.patch.object(server, "require_hardware_idle"):
+            with self.assertRaises(HTTPException) as raised:
+                server.plotter_move_to(
+                    request,
+                    {"x_mm": 10, "y_mm": 20},
+                    x_plotter_token="test-token",
+                )
+
+        self.assertEqual(raised.exception.status_code, 409)
+        self.assertIn("arrow controls", str(raised.exception.detail))
 
     def test_return_home_uses_direct_ebb_motion(self):
         with server.position_lock:
@@ -709,9 +1039,10 @@ class JobClearTests(unittest.TestCase):
                 mock.patch.object(server, "save_job_unlocked") as save_job,
             ):
                 server.jobs.clear()
-                server.load_jobs()
+                position_uncertain = server.load_jobs()
 
         self.assertEqual(server.jobs["done-job"]["status"], "done")
+        self.assertFalse(position_uncertain)
         save_job.assert_not_called()
         server.jobs.clear()
 
@@ -729,11 +1060,57 @@ class JobClearTests(unittest.TestCase):
                 mock.patch.object(server, "save_job_unlocked") as save_job,
             ):
                 server.jobs.clear()
-                server.load_jobs()
+                position_uncertain = server.load_jobs()
 
         self.assertEqual(server.jobs["running-job"]["status"], "interrupted")
+        self.assertTrue(position_uncertain)
         self.assertIn("Server restarted", server.jobs["running-job"]["operator_message"])
         save_job.assert_called_once_with("running-job")
+        server.jobs.clear()
+
+    def test_load_jobs_cancels_pending_job_abandoned_by_restart(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            jobs_dir = Path(tmpdir) / "jobs"
+            server.state_store.save_job(
+                jobs_dir,
+                "pending-job",
+                {"id": "pending-job", "status": "waiting_for_operator", "created_at": 123},
+            )
+
+            with (
+                mock.patch.object(server, "JOBS_DIR", jobs_dir),
+                mock.patch.object(server, "save_job_unlocked") as save_job,
+            ):
+                server.jobs.clear()
+                position_uncertain = server.load_jobs()
+
+        self.assertEqual(server.jobs["pending-job"]["status"], "cancelled")
+        self.assertIn("before this job began", server.jobs["pending-job"]["operator_message"])
+        self.assertFalse(position_uncertain)
+        save_job.assert_called_once_with("pending-job")
+        server.jobs.clear()
+
+    def test_load_jobs_migrates_never_started_interrupted_job_to_cancelled(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            jobs_dir = Path(tmpdir) / "jobs"
+            server.state_store.save_job(
+                jobs_dir,
+                "legacy-job",
+                {
+                    "id": "legacy-job",
+                    "status": "interrupted",
+                    "created_at": 123,
+                    "started_at": None,
+                    "current_layer": None,
+                    "last_completed_layer": None,
+                },
+            )
+
+            with mock.patch.object(server, "JOBS_DIR", jobs_dir):
+                server.jobs.clear()
+                server.load_jobs()
+
+        self.assertEqual(server.jobs["legacy-job"]["status"], "cancelled")
         server.jobs.clear()
 
     def test_delete_single_stopped_job_keeps_files_and_removes_metadata(self):
@@ -1424,6 +1801,7 @@ class AutoDipExecutionTests(unittest.TestCase):
                     automatic_ink_dipping=None,
                     autoDip=None,
                     dip_interval_s=None,
+                    rotation_degrees=0,
                     x_plotter_token="test-token",
                 )
             )
@@ -1431,6 +1809,97 @@ class AutoDipExecutionTests(unittest.TestCase):
         self.assertFalse(result["auto_dip_enabled"])
         enqueue.assert_called_once_with(result["job_id"])
         server.jobs.pop(result["job_id"], None)
+
+    def test_upload_rotates_svg_before_validation_and_records_orientation(self):
+        uploaded = mock.Mock()
+        uploaded.filename = "portrait.svg"
+        uploaded.file = io.BytesIO(
+            b'<svg xmlns="http://www.w3.org/2000/svg" width="10mm" height="20mm" '
+            b'viewBox="0 0 10 20"><path d="M 0 0 L 10 20"/></svg>'
+        )
+
+        with (
+            tempfile.TemporaryDirectory() as tmpdir,
+            mock.patch.object(server, "JOBS_DIR", Path(tmpdir) / "jobs"),
+            mock.patch.object(server, "LOGS_DIR", Path(tmpdir) / "logs"),
+            mock.patch.object(server, "current_ink_well_settings", return_value={"installed": False}),
+            mock.patch.object(server.job_queue, "put") as enqueue,
+        ):
+            result = asyncio.run(
+                server.plot_layers(
+                    files=[uploaded],
+                    layer_names=None,
+                    speed_pendown=None,
+                    speed_penup=None,
+                    pen_delay_down=None,
+                    pen_delay_up=None,
+                    pen_rate_raise=None,
+                    pen_pos_down=None,
+                    pen_pos_up=None,
+                    auto_dip=False,
+                    auto_dip_enabled=None,
+                    ink_dip=None,
+                    ink_dipping=None,
+                    automatic_ink_dipping=None,
+                    autoDip=None,
+                    dip_interval_s=None,
+                    rotation_degrees=90,
+                    x_plotter_token="test-token",
+                )
+            )
+            job = server.jobs[result["job_id"]]
+            input_svg = Path(job["layers"][0]["input_svg"])
+
+            self.assertEqual(result["rotation_degrees"], 90)
+            self.assertEqual(job["rotation_degrees"], 90)
+            self.assertEqual(job["layers"][0]["rotation_degrees"], 90)
+            self.assertEqual(
+                job["layers"][0]["svg_metrics"],
+                {"width_mm": 20.0, "height_mm": 10.0},
+            )
+            self.assertEqual(server.job_plot_footprint(job), {"width_mm": 20.0, "height_mm": 10.0})
+            self.assertIn('viewBox="0 0 20 10"', input_svg.read_text(encoding="utf-8"))
+
+            job["status"] = "done"
+            rerun_result = server.rerun_job(
+                result["job_id"],
+                x_plotter_token="test-token",
+            )
+            rerun = server.jobs[rerun_result["job_id"]]
+            rerun_svg = Path(rerun["layers"][0]["input_svg"]).read_text(encoding="utf-8")
+
+            self.assertEqual(rerun_result["rotation_degrees"], 90)
+            self.assertEqual(rerun["rotation_degrees"], 90)
+            self.assertEqual(rerun["layers"][0]["svg_metrics"], {"width_mm": 20.0, "height_mm": 10.0})
+            self.assertEqual(rerun_svg.count('transform="matrix('), 1)
+
+            rotated_rerun_result = server.rerun_job(
+                result["job_id"],
+                {"rotation_degrees": 180},
+                x_plotter_token="test-token",
+            )
+            rotated_rerun = server.jobs[rotated_rerun_result["job_id"]]
+            rotated_rerun_svg = Path(rotated_rerun["layers"][0]["input_svg"]).read_text(encoding="utf-8")
+
+            self.assertEqual(rotated_rerun_result["rotation_degrees"], 180)
+            self.assertEqual(rotated_rerun["rotation_degrees"], 180)
+            self.assertEqual(
+                rotated_rerun["layers"][0]["svg_metrics"],
+                {"width_mm": 10.0, "height_mm": 20.0},
+            )
+            self.assertEqual(rotated_rerun_svg.count('transform="matrix('), 2)
+
+        self.assertEqual(
+            enqueue.call_args_list,
+            [
+                mock.call(result["job_id"]),
+                mock.call(rerun_result["job_id"]),
+                mock.call(rotated_rerun_result["job_id"]),
+            ],
+        )
+        server.jobs.pop(result["job_id"], None)
+        server.jobs.pop(rerun_result["job_id"], None)
+        server.jobs.pop(rotated_rerun_result["job_id"], None)
 
     def test_prepares_checkpoint_digest_for_layer(self):
         analysis = {

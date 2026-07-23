@@ -1,0 +1,8 @@
+[Desktop Entry]
+Type=Application
+Name=Launch Plotter
+Comment=Start the plotter service and open its control panel
+Exec=/home/jamie/plotter/scripts/launch_plotter_gui.sh
+Icon=applications-engineering
+Terminal=false
+Categories=Utility;
